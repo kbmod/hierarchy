@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hierarchy"
+version = "0.2.0"
+description = "Standalone multi-bot runtime: isolated stores, in-process DMs"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "hierarchy" }]
+dependencies = []
+
+[project.scripts]
+hierarchy = "hierarchy.cli:main"
+hierarchy-serve = "hierarchy.serve:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
