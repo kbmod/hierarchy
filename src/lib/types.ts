@@ -24,6 +24,7 @@ export type Bot = {
   provider?: string | null;
   model?: string | null;
   status?: string;
+  vpsId?: string;
 };
 
 export type HistoryItem = {
@@ -79,7 +80,7 @@ export type Screen =
   | { name: "home" }
   | { name: "chat"; botId: string }
   | { name: "group"; groupId: string }
-  | { name: "computer"; botId?: string }
+  | { name: "computer"; vpsId?: string }
   | { name: "settings" }
   | { name: "setup" }
   | { name: "new-agent" }

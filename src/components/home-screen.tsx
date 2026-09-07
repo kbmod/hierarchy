@@ -15,6 +15,7 @@ export function HomeScreen({
   onNew,
   onSettings,
   onComputer,
+  vpsLabel,
 }: {
   bots: Bot[];
   groups: Group[];
@@ -26,6 +27,7 @@ export function HomeScreen({
   onNew: () => void;
   onSettings: () => void;
   onComputer: () => void;
+  vpsLabel?: (vpsId?: string) => string;
 }) {
   const visibleBots = bots.filter((b) => !hidden.includes(b.id));
   const spotlight = visibleBots.slice(0, 3);
@@ -115,6 +117,7 @@ export function HomeScreen({
                 </span>
               </div>
               <p className="truncate text-[13px] text-muted">
+                {vpsLabel?.(bot.vpsId) ? `${vpsLabel(bot.vpsId)} · ` : ""}
                 {previewOf(bot.preview || bot.job)}
               </p>
             </div>

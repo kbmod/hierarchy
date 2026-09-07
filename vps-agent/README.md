@@ -8,13 +8,27 @@ The Hierarchy Android app talks to this agent on your VPS. The VPS is the bots' 
 
 ## Run on a VPS
 
+Do not leave a terminal open. Install it as a systemd service:
+
+```bash
+cd vps-agent
+sudo bash scripts/install-service.sh
+```
+
+That prints a URL (`http://YOUR_VPS_IP:8765`) and a token, enables the service, and restarts it on reboot. Then paste those into the phone app. Open TCP 8765 on the firewall / security group.
+
+```bash
+systemctl status hierarchy
+journalctl -u hierarchy -f
+```
+
+Foreground (debug only):
+
 ```bash
 export HIERARCHY_TOKEN="$(openssl rand -hex 24)"
 export HIERARCHY_HOME="$HOME/.hierarchy"
 PYTHONPATH=src python3 -m hierarchy serve --host 0.0.0.0 --port 8765
 ```
-
-Then in the phone app: Settings → Agent backends → paste `http://YOUR_VPS:8765` and the token.
 
 ```bash
 # API keys

@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { AreaField, Banner, Field, GhostButton, PrimaryButton, Screen, TextField } from "@/components/chrome";
+import { Banner, Field, GhostButton, PrimaryButton, Screen, TextField } from "@/components/chrome";
+import { VpsHowto } from "@/components/vps-howto";
+import { isNativeApp } from "@/lib/native";
 import { useApp } from "@/lib/store";
 import { useAgent } from "@/lib/use-agent";
 import { vps } from "@/lib/vps";
@@ -15,7 +17,11 @@ export function SetupScreen() {
   const backup = vpsSlots.find((v) => v.role === "backup") ?? vpsSlots[1];
 
   async function ping(slot = primary) {
-    const url = slot.url.trim() || "demo";
+    const url = slot.url.trim() || (isNativeApp() ? "" : "demo");
+    if (!url) {
+      setNote("Paste the VPS URL first (http://YOUR_IP:8765).");
+      return false;
+    }
     const result = await run(() => vps.health({ url, token: slot.token }), { quiet: false });
     if (result?.ok) {
       setNote(url === "demo" ? "Local demo computer is ready." : `Reached ${slot.label}.`);
@@ -27,12 +33,16 @@ export function SetupScreen() {
   async function seedFloor() {
     const ok = await ping();
     if (!ok) return;
-    const floor = await run(() => vps.floor({ url: primary.url || "demo", token: primary.token }));
+    const url = primary.url.trim() || (isNativeApp() ? "" : "demo");
+    if (!url) return;
+    const floor = await run(() => vps.floor({ url, token: primary.token }));
     if (floor) complete();
   }
 
+  const native = isNativeApp();
+
   return (
-    <Screen className="px-5 pb-8 pt-[max(1.5rem,env(safe-area-inset-top))]">
+    <Screen className="overflow-y-auto px-5 pb-8 pt-[max(1.5rem,env(safe-area-inset-top))]">
       <p className="text-[12px] font-medium uppercase tracking-[0.14em] text-muted">Hierarchy</p>
       {step === 0 ? (
         <>
@@ -44,18 +54,31 @@ export function SetupScreen() {
             button is a shell on that machine — no desktop environment required.
           </p>
           <div className="mt-auto space-y-3 pt-10">
-            <PrimaryButton onClick={() => setStep(1)}>Configure computers</PrimaryButton>
-            <GhostButton onClick={seedFloor}>Use the demo computer</GhostButton>
+            <PrimaryButton onClick={() => setStep(1)}>Set up a VPS</PrimaryButton>
+            {native ? null : <GhostButton onClick={seedFloor}>Use the demo computer</GhostButton>}
           </div>
         </>
       ) : null}
 
       {step === 1 ? (
         <>
-          <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.03em]">Agent backends</h1>
+          <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.03em]">On your VPS</h1>
+          <div className="mt-4">
+            <VpsHowto />
+          </div>
+          <div className="mt-auto space-y-3 pt-8">
+            <PrimaryButton onClick={() => setStep(2)}>I have a URL and token</PrimaryButton>
+            <GhostButton onClick={() => setStep(0)}>Back</GhostButton>
+          </div>
+        </>
+      ) : null}
+
+      {step === 2 ? (
+        <>
+          <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.03em]">Paste them here</h1>
           <p className="mt-2 text-[14px] text-muted">
-            Paste the agent URL on each VPS. In this preview, leave the URL as{" "}
-            <span className="font-medium text-fg">demo</span> to use the computer on this machine.
+            URL is <span className="font-medium text-fg">http://TAILSCALE_IP:8765</span> if you reach the box
+            over Tailscale, otherwise the public IP. Token is printed by the installer.
           </p>
           <div className="mt-6 space-y-5">
             {primary ? (
@@ -78,35 +101,31 @@ export function SetupScreen() {
             <PrimaryButton
               onClick={async () => {
                 const ok = await ping();
-                if (ok) setStep(2);
+                if (ok) setStep(3);
               }}
             >
               Test and continue
             </PrimaryButton>
-            <GhostButton onClick={() => setStep(0)}>Back</GhostButton>
-          </div>
-        </>
-      ) : null}
-
-      {step === 2 ? (
-        <>
-          <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.03em]">Providers</h1>
-          <p className="mt-2 text-[14px] leading-relaxed text-muted">
-            Sign in with xAI (Grok) OAuth or ChatGPT OAuth on the VPS, or paste an API key. Tokens stay on the
-            agent, never in the phone UI.
-          </p>
-          <p className="mt-4 text-[13px] text-muted">
-            You can connect Grok and ChatGPT from Settings after the floor is up. This preview can use the
-            bundled xAI key on the demo computer immediately.
-          </p>
-          <div className="mt-auto space-y-3 pt-8">
-            <PrimaryButton onClick={() => setStep(3)}>Continue</PrimaryButton>
             <GhostButton onClick={() => setStep(1)}>Back</GhostButton>
           </div>
         </>
       ) : null}
 
       {step === 3 ? (
+        <>
+          <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.03em]">Providers</h1>
+          <p className="mt-2 text-[14px] leading-relaxed text-muted">
+            Sign in with Grok OAuth or ChatGPT OAuth after the floor is up (Settings → Providers), or paste an
+            API key there. Tokens stay on the VPS, not on the phone.
+          </p>
+          <div className="mt-auto space-y-3 pt-8">
+            <PrimaryButton onClick={() => setStep(4)}>Continue</PrimaryButton>
+            <GhostButton onClick={() => setStep(2)}>Back</GhostButton>
+          </div>
+        </>
+      ) : null}
+
+      {step === 4 ? (
         <>
           <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.03em]">Meet the floor</h1>
           <p className="mt-2 text-[14px] leading-relaxed text-muted">
@@ -133,7 +152,7 @@ export function SetupScreen() {
           </ul>
           <div className="mt-auto space-y-3 pt-8">
             <PrimaryButton onClick={seedFloor}>Create teammates</PrimaryButton>
-            <GhostButton onClick={() => setStep(2)}>Back</GhostButton>
+            <GhostButton onClick={() => setStep(3)}>Back</GhostButton>
           </div>
         </>
       ) : null}
@@ -160,7 +179,7 @@ function VpsFields({
         <Field label="Agent URL">
           <TextField
             value={slot.url}
-            placeholder="https://vps.example.net:8765 or demo"
+            placeholder="http://100.x.x.x:8765"
             onChange={(e) => onChange({ url: e.target.value })}
             autoCapitalize="none"
             autoCorrect="off"

@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@source "./**/*.{ts,tsx}";
+@source "../apk-src/**/*.{ts,tsx}";
 
 @theme {
   --font-sans: "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", system-ui, sans-serif;
@@ -85,13 +87,18 @@
 
   html,
   body,
-  #app {
+  #app,
+  #root {
     min-height: 100%;
     background: var(--bg);
     color: var(--fg);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  html[data-native] body {
+    padding-top: max(env(safe-area-inset-top, 0px), var(--sat, 36px));
   }
 
   body {

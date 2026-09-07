@@ -128,6 +128,7 @@ export const vps = {
       reports_to?: string;
       provider?: string;
       model?: string;
+      vpsId?: string;
     },
   ) =>
     call<{

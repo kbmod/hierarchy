@@ -28,16 +28,15 @@ On the phone: allow install from this source, open Hierarchy, add your VPS URL +
 
 ## VPS agent (the computer)
 
-On each server:
+On each server, run it as a service (no open terminal):
 
 ```bash
-tar -xzf hierarchy-agent.tgz
-export HIERARCHY_TOKEN="$(openssl rand -hex 24)"
-export HIERARCHY_HOME="$HOME/.hierarchy"
-PYTHONPATH=src python3 -m hierarchy serve --host 0.0.0.0 --port 8765
+git clone https://github.com/kbmod/hierarchy.git
+cd hierarchy/vps-agent
+sudo bash scripts/install-service.sh
 ```
 
-Then in the app: Settings → Agent backends → `http://YOUR_VPS:8765` and the token.
+Paste the printed URL (`http://YOUR_VPS_IP:8765`) and token into the app. Open TCP 8765 on the firewall.
 
 ```bash
 python3 -m hierarchy key xai "$XAI_API_KEY"

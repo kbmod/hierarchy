@@ -5,6 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   root: path.resolve("apk-src"),
+  base: "./",
   define: {
     "import.meta.env.VITE_APK": JSON.stringify("1"),
   },

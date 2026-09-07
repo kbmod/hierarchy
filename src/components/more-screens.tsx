@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { SendHorizontal } from "lucide-react";
 import { BotAvatar } from "@/components/bot-avatar";
+import { VpsHowto } from "@/components/vps-howto";
 import {
   AreaField,
   Banner,
@@ -34,10 +35,10 @@ export function SettingsScreen({
       <div className="space-y-6 px-4 py-4 pb-10">
         <section>
           <h2 className="mb-2 text-[12px] font-medium uppercase tracking-[0.12em] text-muted">Account</h2>
-          <Row label="Agent backend" value={active.label} onClick={() => onOpen("backends")} />
+          <Row label="Computers" value={active.label} onClick={() => onOpen("backends")} />
           <Row
             label="Providers"
-            value={auth?.active ? String(auth.active) : "stub"}
+            value={`${auth?.active ? String(auth.active) : "stub"} · ${active.label}`}
             onClick={() => onOpen("providers")}
           />
           <Row label="Install on this phone" value="Android" onClick={() => onOpen("install")} />
@@ -99,12 +100,12 @@ export function BackendsScreen({
   const setActive = useApp((s) => s.setActiveVps);
   return (
     <Screen>
-      <TopBar onBack={onBack} title="Agent backends" subtitle="Bring your own VPS" />
+      <TopBar onBack={onBack} title="Computers" subtitle="Each bot lives on one VPS" />
       <div className="space-y-4 px-4 py-4">
         {slots.map((slot) => (
           <div key={slot.id} className="rounded-[24px] border border-line bg-surface p-4">
             <div className="mb-3 flex items-center justify-between">
-              <span className="text-[13px] font-semibold capitalize">{slot.role}</span>
+              <span className="text-[13px] font-semibold">{slot.label}</span>
               <button
                 type="button"
                 onClick={() => setActive(slot.id)}
@@ -113,7 +114,7 @@ export function BackendsScreen({
                   activeVpsId === slot.id ? "bg-fg text-bg" : "bg-elevated text-muted",
                 )}
               >
-                {activeVpsId === slot.id ? "Active" : "Use"}
+                {activeVpsId === slot.id ? "Default" : "Make default"}
               </button>
             </div>
             <div className="space-y-3">
@@ -148,21 +149,13 @@ export function BackendsScreen({
             </div>
           </div>
         ))}
+        <p className="text-[13px] leading-relaxed text-muted">
+          Default is for new agents, Grok/ChatGPT login, and the home shell. Each bot stays on the computer
+          where you created it — pick the box when you add an agent.
+        </p>
         <GhostButton onClick={() => addVps()}>Add another VPS</GhostButton>
         {healthNote ? <Banner>{healthNote}</Banner> : null}
-        <a
-          href="/hierarchy-agent.tgz"
-          download="hierarchy-agent.tgz"
-          className="flex h-12 w-full items-center justify-center rounded-[20px] border border-line bg-surface px-4 text-[15px] font-medium text-fg"
-        >
-          Download VPS agent
-        </a>
-        <div className="rounded-[20px] bg-elevated p-4 text-[13px] leading-relaxed text-muted">
-          On each VPS, unpack the agent, then run
-          <code className="mt-2 block rounded-lg bg-bg px-2 py-2 font-mono text-[12px] text-fg">
-            HIERARCHY_TOKEN=… PYTHONPATH=src python3 -m hierarchy serve --host 0.0.0.0 --port 8765
-          </code>
-        </div>
+        <VpsHowto />
       </div>
     </Screen>
   );
@@ -284,11 +277,17 @@ export function OauthScreen({
 export function NewAgentScreen({
   bots,
   auth,
+  authByVps,
+  computers,
+  defaultVpsId,
   onBack,
   onCreate,
 }: {
   bots: Bot[];
   auth: AuthStatus | null;
+  authByVps?: Record<string, AuthStatus>;
+  computers?: { id: string; label: string }[];
+  defaultVpsId?: string;
   onBack: () => void;
   onCreate: (input: {
     name: string;
@@ -297,6 +296,7 @@ export function NewAgentScreen({
     reports_to?: string;
     provider?: string;
     model?: string;
+    vpsId?: string;
   }) => void;
 }) {
   const [name, setName] = useState("");
@@ -305,6 +305,9 @@ export function NewAgentScreen({
   const [reports, setReports] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
+  const [vpsId, setVpsId] = useState(defaultVpsId || computers?.[0]?.id || "");
+  const authForBox = (authByVps && vpsId && authByVps[vpsId]) || auth;
+  const peers = bots.filter((b) => !vpsId || b.vpsId === vpsId);
   return (
     <Screen>
       <TopBar onBack={onBack} title="New agent" />
@@ -319,9 +322,28 @@ export function NewAgentScreen({
             reports_to: reports || undefined,
             provider: provider || undefined,
             model: model || undefined,
+            vpsId: vpsId || undefined,
           });
         }}
       >
+        {computers && computers.length > 0 ? (
+          <Field label="Computer">
+            <select
+              value={vpsId}
+              onChange={(e) => {
+                setVpsId(e.target.value);
+                setReports("");
+              }}
+              className="h-12 w-full rounded-[16px] border border-line bg-surface px-3 text-[15px]"
+            >
+              {computers.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : null}
         <Field label="Name">
           <TextField value={name} onChange={(e) => setName(e.target.value)} placeholder="Piper" />
         </Field>
@@ -342,7 +364,7 @@ export function NewAgentScreen({
             className="h-12 w-full rounded-[16px] border border-line bg-surface px-3 text-[15px]"
           >
             <option value="">None</option>
-            {bots.map((b) => (
+            {peers.map((b) => (
               <option key={b.id} value={b.id}>
                 {b.name}
               </option>
@@ -350,7 +372,7 @@ export function NewAgentScreen({
           </select>
         </Field>
         <ProviderModelFields
-          auth={auth}
+          auth={authForBox}
           provider={provider}
           model={model}
           suggestions={modelsFor(provider)}
@@ -527,6 +549,7 @@ export function SearchScreen({
 export function ProfileScreen({
   bot,
   auth,
+  computerLabel,
   onBack,
   onComputer,
   onPin,
@@ -536,6 +559,7 @@ export function ProfileScreen({
 }: {
   bot: Bot;
   auth: AuthStatus | null;
+  computerLabel?: string;
   onBack: () => void;
   onComputer: () => void;
   onPin: () => void;
@@ -553,8 +577,7 @@ export function ProfileScreen({
         <BotAvatar name={bot.name} size="xl" />
         <p className="mt-4 text-[14px] leading-relaxed text-muted">{bot.description}</p>
         <p className="mt-2 text-[12px] text-subtle">
-          {providerLabel(bot.provider)}
-          {bot.model ? ` · ${bot.model}` : ""}
+          {[computerLabel, providerLabel(bot.provider), bot.model].filter(Boolean).join(" · ")}
         </p>
       </div>
       <div className="space-y-4 px-4 pb-10">

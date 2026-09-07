@@ -47,7 +47,7 @@ function demoSlots(): VpsSlot[] {
     {
       id: "vps-1",
       label: "Primary computer",
-      url: "demo",
+      url: "",
       token: "",
       role: "primary",
     },
