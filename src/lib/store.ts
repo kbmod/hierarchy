@@ -29,6 +29,8 @@ type Store = Persisted & {
   completeOnboarding: () => void;
   setAppearance: (appearance: AppearanceMode) => void;
   upsertVps: (slot: VpsSlot) => void;
+  addVps: () => string;
+  removeVps: (id: string) => void;
   setActiveVps: (id: string) => void;
   setDraft: (id: string, text: string) => void;
   togglePin: (id: string) => void;
@@ -134,6 +136,26 @@ export const useApp = create<Store>((set, get) => ({
       const exists = s.vps.some((v) => v.id === slot.id);
       const vps = exists ? s.vps.map((v) => (v.id === slot.id ? slot : v)) : [...s.vps, slot];
       return { vps };
+    });
+    get().persist();
+  },
+  addVps: () => {
+    const id = uid();
+    const n = get().vps.length + 1;
+    get().upsertVps({
+      id,
+      label: `Computer ${n}`,
+      url: "",
+      token: "",
+      role: n === 1 ? "primary" : "backup",
+    });
+    return id;
+  },
+  removeVps: (id) => {
+    set((s) => {
+      const vps = s.vps.filter((v) => v.id !== id);
+      const activeVpsId = s.activeVpsId === id ? (vps[0]?.id ?? "") : s.activeVpsId;
+      return { vps, activeVpsId };
     });
     get().persist();
   },

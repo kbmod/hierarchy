@@ -4,7 +4,7 @@ A small multi-bot runtime. Roster, isolated stores, in-process chat and DMs.
 
 Each bot has its own directory. One process owns every bot. A DM is written to the target inbox and drained immediately.
 
-The Android client (Hierarchy) talks to this agent on your VPS.
+The Hierarchy Android app talks to this agent on your VPS. The VPS is the bots' computer: shell, files, HTTP, and background jobs.
 
 ## Run on a VPS
 

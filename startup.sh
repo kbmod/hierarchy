@@ -1,16 +1,17 @@
 #!/bin/sh
 set -eu
-cd /workspace
+ROOT="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+cd "$ROOT"
 node scripts/preview.mjs stop || true
 if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:8765/api/health; then
   :
 else
-  STORE=/tmp/hierarchy-store
+  STORE="${HIERARCHY_HOME:-$ROOT/.hierarchy-demo}"
   mkdir -p "$STORE"
   if [ -n "${XAI_API_KEY:-}" ]; then
-    PYTHONPATH=/workspace/vps-agent/src python3 -m hierarchy key xai "$XAI_API_KEY" --store "$STORE" >/tmp/hierarchy-key.log 2>&1 || true
+    PYTHONPATH="$ROOT/vps-agent/src" python3 -m hierarchy key xai "$XAI_API_KEY" --store "$STORE" >/tmp/hierarchy-key.log 2>&1 || true
   fi
-  PYTHONPATH=/workspace/vps-agent/src python3 -m hierarchy serve --host 127.0.0.1 --port 8765 --store "$STORE" >>/tmp/hierarchy-agent.log 2>&1 &
+  PYTHONPATH="$ROOT/vps-agent/src" python3 -m hierarchy serve --host 127.0.0.1 --port 8765 --store "$STORE" >>/tmp/hierarchy-agent.log 2>&1 &
   i=0
   while [ "$i" -lt 20 ]; do
     if curl -sf -o /dev/null --max-time 1 http://127.0.0.1:8765/api/health; then

@@ -27,6 +27,8 @@ class Store:
                 "job": bot.job,
                 "description": bot.description,
                 "reports_to": bot.reports_to,
+                "provider": bot.provider,
+                "model": bot.model,
             },
         )
         if not (self.bot_dir(bot.id) / "instructions.md").exists():
@@ -90,12 +92,24 @@ class Store:
 
 
 def _bot_from_dict(data: dict[str, Any]) -> Bot:
+    provider = data.get("provider") or None
+    model = data.get("model") or None
+    if isinstance(provider, str):
+        provider = provider.strip() or None
+    else:
+        provider = None
+    if isinstance(model, str):
+        model = model.strip() or None
+    else:
+        model = None
     return Bot(
         id=data["id"],
         name=data["name"],
         job=data["job"],
         description=data["description"],
         reports_to=data.get("reports_to"),
+        provider=provider,
+        model=model,
     )
 
 

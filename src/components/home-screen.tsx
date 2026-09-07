@@ -137,8 +137,8 @@ export function HomeScreen({
         onClick={onComputer}
         className="mx-4 mb-[max(1rem,env(safe-area-inset-bottom))] mt-2 rounded-[18px] border border-line bg-surface px-4 py-3 text-left"
       >
-        <div className="text-[13px] font-semibold">Agent computer</div>
-        <div className="text-[12px] text-muted">Watch screens, take over, return control</div>
+        <div className="text-[13px] font-semibold">Shell</div>
+        <div className="text-[12px] text-muted">Run commands on the VPS</div>
       </button>
     </Screen>
   );

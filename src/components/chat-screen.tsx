@@ -61,10 +61,10 @@ export function ChatScreen({
       <TopBar
         onBack={onBack}
         title={bot.name}
-        subtitle={busy ? "Working on the computer…" : bot.job}
+        subtitle={busy ? "Working…" : [bot.provider, bot.model, bot.job].filter(Boolean).join(" · ")}
         right={
           <>
-            <IconButton label="Computer" onClick={onComputer}>
+            <IconButton label="Shell" onClick={onComputer}>
               <Monitor className="size-5" strokeWidth={1.75} />
             </IconButton>
             <IconButton label="Bot profile" onClick={onProfile}>
@@ -109,7 +109,7 @@ export function ChatScreen({
         {busy ? (
           <div className="flex items-center gap-2 pl-1 text-[13px] text-muted">
             <BotAvatar name={bot.name} size="sm" />
-            <span className="shimmer rounded-full px-3 py-1">{bot.name} is using the computer</span>
+            <span className="shimmer rounded-full px-3 py-1">{bot.name} is working</span>
           </div>
         ) : null}
 

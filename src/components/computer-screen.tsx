@@ -1,91 +1,64 @@
-import { BotAvatar } from "@/components/bot-avatar";
-import { Screen, TopBar } from "@/components/chrome";
-import type { ComputerScreen as ScreenData, Routine } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { useEffect, useRef, useState } from "react";
+import { Screen, TextField, TopBar } from "@/components/chrome";
+import type { ShellState } from "@/lib/types";
 
-export function ComputerScreenView({
-  screens,
-  selectedId,
-  routines,
+export function ShellScreen({
+  shell,
+  busy,
   onBack,
-  onSelect,
-  onToggleRoutine,
+  onExec,
 }: {
-  screens: ScreenData[];
-  selectedId?: string;
-  routines: Routine[];
+  shell: ShellState | null;
+  busy: boolean;
   onBack: () => void;
-  onSelect: (id: string) => void;
-  onToggleRoutine: (id: string, active: boolean) => void;
+  onExec: (cmd: string) => void;
 }) {
-  const current = screens.find((s) => s.id === selectedId) ?? screens[0];
+  const [cmd, setCmd] = useState("");
+  const log = useRef<HTMLPreElement>(null);
+  const lines = shell?.lines?.length ? shell.lines : ["$  # VPS shell — no desktop required"];
+
+  useEffect(() => {
+    const el = log.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [lines]);
+
   return (
     <Screen>
-      <TopBar onBack={onBack} title="Agent computer" subtitle={current ? `${current.name}'s screen` : "Shared"} />
-      <div className="flex gap-2 overflow-x-auto px-4 py-3">
-        {screens.map((s) => (
+      <TopBar onBack={onBack} title="Shell" subtitle={shell?.cwd || "VPS"} />
+      <div className="flex min-h-0 flex-1 flex-col px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+        <pre
+          ref={log}
+          className="min-h-0 flex-1 overflow-auto rounded-[18px] bg-elevated p-3 font-mono text-[12px] leading-relaxed text-fg"
+        >
+          {lines.join("\n")}
+        </pre>
+        <form
+          className="mt-3 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!cmd.trim()) return;
+            onExec(cmd.trim());
+            setCmd("");
+          }}
+        >
+          <TextField
+            value={cmd}
+            onChange={(e) => setCmd(e.target.value)}
+            placeholder="Command"
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="h-11 font-mono text-[13px]"
+          />
           <button
-            key={s.id}
-            type="button"
-            onClick={() => onSelect(s.id)}
-            className={cn(
-              "flex items-center gap-2 rounded-full border px-3 py-1.5 text-[13px]",
-              s.id === current?.id ? "border-fg bg-fg text-bg" : "border-line bg-surface text-fg",
-            )}
+            type="submit"
+            disabled={busy || !cmd.trim()}
+            className="h-11 shrink-0 rounded-[16px] bg-accent px-4 text-[13px] font-semibold text-accent-fg disabled:opacity-40"
           >
-            <BotAvatar name={s.name} size="sm" />
-            {s.name}
+            Run
           </button>
-        ))}
-      </div>
-
-      <div className="px-4">
-        <div className="overflow-hidden rounded-[24px] border border-line bg-[#111] text-[#e8eaed] shadow-sm">
-          <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2 text-[11px]">
-            <span className="size-2 rounded-full bg-[#ff5f57]" />
-            <span className="size-2 rounded-full bg-[#febc2e]" />
-            <span className="size-2 rounded-full bg-[#28c840]" />
-            <span className="ml-2 truncate text-white/60">{current?.title || "Desktop"}</span>
-            <span className="ml-auto uppercase tracking-wider text-white/40">
-              {current?.status === "working" ? "live" : "idle"}
-            </span>
-          </div>
-          <pre className="min-h-56 overflow-auto p-4 font-mono text-[12px] leading-relaxed">
-            {(current?.lines?.length ? current.lines : ["$ waiting for work", "# shared /workspace"]).join("\n")}
-          </pre>
-        </div>
-        <p className="mt-2 px-1 text-[12px] text-muted">
-          Take over for passwords, 2FA, or CAPTCHA on the VPS desktop, then return control. Every bot shares this
-          computer.
-        </p>
-      </div>
-
-      <div className="mt-6 px-4 pb-8">
-        <h2 className="mb-2 text-[13px] font-semibold">Routines</h2>
-        {routines.length === 0 ? (
-          <p className="text-[13px] text-muted">No routines on this bot yet.</p>
-        ) : (
-          <ul className="space-y-2">
-            {routines.map((r) => (
-              <li key={r.id} className="flex items-center justify-between rounded-[18px] bg-surface px-3 py-3">
-                <div>
-                  <div className="text-[14px] font-medium">{r.title}</div>
-                  <div className="text-[12px] text-muted">{r.schedule}</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onToggleRoutine(r.id, !r.active)}
-                  className={cn(
-                    "rounded-full px-3 py-1 text-[12px] font-medium",
-                    r.active ? "bg-ok/15 text-ok" : "bg-elevated text-muted",
-                  )}
-                >
-                  {r.active ? "Active" : "Paused"}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+        </form>
       </div>
     </Screen>
   );

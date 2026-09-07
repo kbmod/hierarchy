@@ -24,25 +24,34 @@ def stub_complete(bot: Bot, instructions: str, history: list[dict[str, str]], te
 
 
 def complete(home: str, bot: Bot, instructions: str, history: list[dict[str, str]], text: str) -> str:
-    cred = auth.credential(home)
+    wanted = (bot.provider or "").strip() or None
+    if wanted == "stub":
+        return stub_complete(bot, instructions, history, text)
+    cred = auth.credential(home, provider=wanted)
     if cred is None:
+        if wanted:
+            return (
+                f"{bot.name}: provider {wanted!r} is not connected. "
+                "Add it in Settings → Providers, or pick another provider on this bot."
+            )
         return stub_complete(bot, instructions, history, text)
     messages = _messages(bot, instructions, history, text)
+    model = (bot.model or "").strip() or str(cred.get("model") or "")
     if cred.get("kind") == "oauth" and cred.get("provider") == "chatgpt":
         token = _fresh_access(home, cred)
-        return chatgpt_complete(token, str(cred.get("model") or "gpt-5.4"), messages)
+        return chatgpt_complete(token, model or "gpt-5.4", messages)
     if cred.get("kind") == "oauth" and cred.get("provider") == "grok":
         token = _fresh_access(home, cred)
         return chat_completions(
             str(cred.get("base_url") or "https://api.x.ai/v1"),
             token,
-            str(cred.get("model") or "grok-4.5"),
+            model or "grok-4.5",
             messages,
         )
     return chat_completions(
         str(cred.get("base_url") or ""),
         str(cred.get("api_key") or ""),
-        str(cred.get("model") or ""),
+        model,
         messages,
     )
 

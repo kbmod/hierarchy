@@ -1,16 +1,19 @@
 """Local HTTP API + a single-page roster UI. Stdlib only."""
 from __future__ import annotations
 
-import argparse
 import json
 import os
+import re
+import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-from hierarchy import auth, computer, oauth, projects
+from hierarchy import auth, computer, oauth, projects, tools
+from hierarchy.jobs import JobBoard
 from hierarchy.runtime import Runtime
 from hierarchy.seed import ensure_floor
 
@@ -32,7 +35,18 @@ class Server:
     def __init__(self, runtime: Runtime, host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> None:
         self.runtime = runtime
         self.pending_oauth: dict[str, oauth.DevicePending] = {}
+        self.jobs = JobBoard()
+        self._stop = threading.Event()
         self._httpd = ThreadingHTTPServer((host, port), _make_handler(self))
+        self._ticker = threading.Thread(target=self._routines_loop, daemon=True)
+        self._ticker.start()
+
+    def _routines_loop(self) -> None:
+        while not self._stop.wait(45):
+            try:
+                _tick_routines(self)
+            except Exception:
+                continue
 
     @property
     def url(self) -> str:
@@ -43,6 +57,7 @@ class Server:
         self._httpd.serve_forever()
 
     def shutdown(self) -> None:
+        self._stop.set()
         self._httpd.shutdown()
         self._httpd.server_close()
 
@@ -63,12 +78,17 @@ def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 return True
             return False
 
+        def _cors(self) -> None:
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Hierarchy-Token")
+            self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+
         def _json(self, status: int, payload: Any) -> None:
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._cors()
             self.end_headers()
             self.wfile.write(body)
 
@@ -87,9 +107,7 @@ def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
 
         def do_OPTIONS(self) -> None:  # noqa: N802
             self.send_response(204)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Headers", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+            self._cors()
             self.end_headers()
 
         def do_GET(self) -> None:  # noqa: N802
@@ -105,6 +123,8 @@ def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
                         "ok": True,
                         "auth": bool(_token()),
                         "bots": len(rt.store.list_bots()),
+                        "computer": True,
+                        "jobs": True,
                     },
                 )
                 return
@@ -118,21 +138,32 @@ def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 self._json(200, {"bots": rt.roster()})
                 return
             if path == "/api/computer":
-                screens = []
-                for bot in rt.store.list_bots():
-                    screen = computer.read(rt.store.bot_dir(bot.id))
-                    screens.append(
-                        {
-                            "id": bot.id,
-                            "name": bot.name,
-                            "job": bot.job,
-                            **screen,
-                        }
-                    )
-                self._json(200, {"screens": screens})
+                self._json(200, computer.read_shell(Path(rt.home)))
                 return
             if path == "/api/projects":
                 self._json(200, {"projects": projects.list_projects(Path(rt.home))})
+                return
+            if path == "/api/jobs":
+                bot_id = (parse_qs(urlparse(self.path).query).get("bot") or [None])[0]
+                self._json(200, {"jobs": server.jobs.list(bot_id)})
+                return
+            if path.startswith("/api/jobs/"):
+                row = server.jobs.get(path.split("/")[3])
+                if row is None:
+                    self._json(404, {"error": "unknown job"})
+                    return
+                self._json(200, row)
+                return
+            if path == "/api/computer/files":
+                rel = (parse_qs(urlparse(self.path).query).get("path") or ["."])[0]
+                target = tools.resolve_path(Path(rt.home), rel)
+                self._json(
+                    200,
+                    {
+                        "path": str(target),
+                        "listing": tools.list_dir(target),
+                    },
+                )
                 return
             if path.startswith("/api/bots/") and path.endswith("/history"):
                 bot_id = path.split("/")[3]
@@ -287,13 +318,67 @@ def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
                         str(payload.get("job") or ""),
                         str(payload.get("description") or ""),
                         reports_to=str(payload["reports_to"]) if payload.get("reports_to") else None,
+                        provider=str(payload["provider"]) if "provider" in payload else None,
+                        model=str(payload["model"]) if "model" in payload else None,
                     )
-                    self._json(201, {"id": bot.id, "name": bot.name, "job": bot.job, "reports_to": bot.reports_to})
+                    self._json(
+                        201,
+                        {
+                            "id": bot.id,
+                            "name": bot.name,
+                            "job": bot.job,
+                            "reports_to": bot.reports_to,
+                            "provider": bot.provider,
+                            "model": bot.model,
+                        },
+                    )
+                    return
+                if path.startswith("/api/bots/") and path.count("/") == 3:
+                    bot_id = path.rstrip("/").split("/")[-1]
+                    updated = rt.update(
+                        bot_id,
+                        job=str(payload["job"]) if payload.get("job") is not None else None,
+                        description=str(payload["description"]) if payload.get("description") is not None else None,
+                        reports_to=str(payload["reports_to"]) if payload.get("reports_to") else None,
+                        clear_reports=payload.get("reports_to") == "",
+                        provider=str(payload["provider"]) if "provider" in payload else None,
+                        model=str(payload["model"]) if "model" in payload else None,
+                    )
+                    self._json(
+                        200,
+                        {
+                            "id": updated.id,
+                            "name": updated.name,
+                            "job": updated.job,
+                            "reports_to": updated.reports_to,
+                            "provider": updated.provider,
+                            "model": updated.model,
+                        },
+                    )
                     return
                 if path.startswith("/api/bots/") and path.endswith("/chat"):
                     bot_id = path.split("/")[3]
-                    reply = rt.chat(bot_id, str(payload.get("text") or ""))
+                    text = str(payload.get("text") or "")
+                    if payload.get("async"):
+                        bot = rt.store.get(bot_id)
+                        message = text.strip()
+                        if not message:
+                            raise ValueError("message is required")
+                        rt.store.append(bot.id, "user", message)
+                        job = server.jobs.submit(
+                            bot_id=bot.id,
+                            kind="chat",
+                            fn=lambda bid=bot.id, msg=message: rt.complete_turn(bid, msg),
+                        )
+                        self._json(202, {"bot_id": bot.id, "job_id": job["id"], "status": "working", "text": ""})
+                        return
+                    reply = rt.chat(bot_id, text)
                     self._json(200, {"bot_id": reply.bot_id, "text": reply.text})
+                    return
+                if path == "/api/computer/exec":
+                    cmd = str(payload.get("cmd") or payload.get("command") or "")
+                    out = rt.exec_shell(cmd)
+                    self._json(200, {"ok": True, "output": out, **computer.read_shell(Path(rt.home))})
                     return
                 if path.startswith("/api/bots/") and path.endswith("/dm"):
                     to_id = path.split("/")[3]
@@ -331,6 +416,24 @@ def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     _write_routines(rt, bot_id, rows)
                     self._json(200, {"routines": rows})
                     return
+                if path.startswith("/api/bots/") and path.endswith("/routines/run"):
+                    bot_id = path.split("/")[3]
+                    rt.store.get(bot_id)
+                    rid = str(payload.get("id") or "")
+                    rows = _read_routines(rt, bot_id)
+                    row = next((r for r in rows if r.get("id") == rid), None)
+                    if row is None:
+                        raise ValueError("unknown routine")
+                    instruction = str(row.get("instruction") or row.get("title") or "Run the routine")
+                    job = server.jobs.submit(
+                        bot_id=bot_id,
+                        kind="routine",
+                        fn=lambda bid=bot_id, msg=instruction: rt.chat(bid, msg).text,
+                    )
+                    row["last_run"] = time.time()
+                    _write_routines(rt, bot_id, rows)
+                    self._json(202, {"job_id": job["id"], "routines": rows})
+                    return
             except ValueError as exc:
                 self._json(400, {"error": str(exc)})
                 return
@@ -362,6 +465,47 @@ def _read_routines(rt: Runtime, bot_id: str) -> list[dict[str, Any]]:
 
 def _write_routines(rt: Runtime, bot_id: str, rows: list[dict[str, Any]]) -> None:
     _routines_path(rt, bot_id).write_text(json.dumps(rows, indent=2), encoding="utf-8")
+
+
+def _interval_seconds(schedule: str) -> float | None:
+    text = (schedule or "").strip().lower()
+    match = re.search(r"every\s+(\d+)\s*(second|sec|s|minute|min|m|hour|hr|h)s?", text)
+    if not match:
+        return None
+    n = int(match.group(1))
+    unit = match.group(2)
+    if unit.startswith("s"):
+        return float(n)
+    if unit.startswith("h"):
+        return float(n * 3600)
+    return float(n * 60)
+
+
+def _tick_routines(server: Server) -> None:
+    rt = server.runtime
+    now = time.time()
+    for bot in rt.store.list_bots():
+        rows = _read_routines(rt, bot.id)
+        changed = False
+        for row in rows:
+            if not row.get("active"):
+                continue
+            interval = _interval_seconds(str(row.get("schedule") or ""))
+            if interval is None or interval < 30:
+                continue
+            last = float(row.get("last_run") or 0)
+            if now - last < interval:
+                continue
+            instruction = str(row.get("instruction") or row.get("title") or "Run the routine")
+            server.jobs.submit(
+                bot_id=bot.id,
+                kind="routine",
+                fn=lambda bid=bot.id, msg=instruction: rt.chat(bid, msg).text,
+            )
+            row["last_run"] = now
+            changed = True
+        if changed:
+            _write_routines(rt, bot.id, rows)
 
 
 _PAGE = """<!doctype html>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChatScreen } from "@/components/chat-screen";
-import { ComputerScreenView } from "@/components/computer-screen";
+import { ShellScreen } from "@/components/computer-screen";
 import { HomeScreen } from "@/components/home-screen";
 import {
   BackendsScreen,
@@ -19,10 +19,11 @@ import {
 } from "@/components/more-screens";
 import { SetupScreen } from "@/components/setup-screen";
 import { Banner } from "@/components/chrome";
-import type { AuthStatus, Bot, ComputerScreen, HistoryItem, Routine } from "@/lib/types";
+import type { AuthStatus, Bot, HistoryItem, ShellState } from "@/lib/types";
 import { useApp } from "@/lib/store";
 import { uid } from "@/lib/utils";
 import { useAgent } from "@/lib/use-agent";
+import { isNativeApp } from "@/lib/native";
 import { vps } from "@/lib/vps";
 
 export function HierarchyApp() {
@@ -52,8 +53,7 @@ export function HierarchyApp() {
   const [bots, setBots] = useState<Bot[]>([]);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [history, setHistory] = useState<Record<string, HistoryItem[]>>({});
-  const [screens, setScreens] = useState<ComputerScreen[]>([]);
-  const [routines, setRoutines] = useState<Routine[]>([]);
+  const [shell, setShell] = useState<ShellState | null>(null);
   const [menu, setMenu] = useState(false);
   const [query, setQuery] = useState("");
   const [healthNote, setHealthNote] = useState<string | null>(null);
@@ -73,6 +73,21 @@ export function HierarchyApp() {
     hydrate();
   }, [hydrate]);
 
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    const cap = (
+      window as unknown as {
+        Capacitor?: { Plugins?: { App?: { addListener?: (event: string, cb: () => void) => { remove?: () => void } } } };
+      }
+    ).Capacitor;
+    const handle = cap?.Plugins?.App?.addListener?.("backButton", () => {
+      if (useApp.getState().stack.length > 1) back();
+    });
+    return () => {
+      handle?.remove?.();
+    };
+  }, [back]);
+
   const refresh = useCallback(async () => {
     const roster = await run(() => vps.bots(conn), { quiet: true });
     if (roster) setBots(roster.bots);
@@ -83,6 +98,18 @@ export function HierarchyApp() {
   useEffect(() => {
     if (onboarded) void refresh();
   }, [refresh, onboarded, conn.url, conn.token]);
+
+  useEffect(() => {
+    if (screen.name !== "computer") return;
+    const tick = () => {
+      void run(() => vps.computer(conn), { quiet: true }).then((data) => {
+        if (data) setShell(data);
+      });
+    };
+    tick();
+    const id = window.setInterval(tick, 2000);
+    return () => window.clearInterval(id);
+  }, [screen.name, conn.url, conn.token, run]);
 
   const currentBot = useMemo(() => {
     if (screen.name === "chat" || screen.name === "profile" || screen.name === "computer") {
@@ -104,6 +131,25 @@ export function HierarchyApp() {
     }
   }
 
+  async function waitJob(jobId: string, botId: string) {
+    for (let i = 0; i < 90; i += 1) {
+      await new Promise((r) => setTimeout(r, 1200));
+      const job = await run(() => vps.job(conn, jobId), { quiet: true });
+      const hist = await run(() => vps.history(conn, botId), { quiet: true });
+      if (hist) {
+        setHistory((h) => ({ ...h, [botId]: hist.history }));
+      }
+      const desk = await run(() => vps.computer(conn), { quiet: true });
+      if (desk) setShell(desk);
+      if (job && job.status !== "working") {
+        if (job.status === "error" && job.error) {
+          useApp.getState().setError(job.error);
+        }
+        return;
+      }
+    }
+  }
+
   async function sendChat(botId: string) {
     const text = (drafts[botId] || "").trim();
     if (!text) return;
@@ -113,24 +159,31 @@ export function HierarchyApp() {
       [botId]: [...(h[botId] || []), { role: "user", content: text }],
     }));
     const reply = await run(() => vps.chat(conn, botId, text));
-    if (reply) {
+    if (!reply) return;
+    if (reply.job_id) {
+      useApp.getState().setBusy(true);
+      try {
+        await waitJob(reply.job_id, botId);
+      } finally {
+        useApp.getState().setBusy(false);
+      }
+    } else if (reply.text) {
       setHistory((h) => ({
         ...h,
         [botId]: [...(h[botId] || []), { role: "assistant", content: reply.text }],
       }));
-      await refresh();
     }
+    await refresh();
   }
 
-  async function openComputer(botId?: string) {
-    go({ name: "computer", botId });
+  async function refreshShell() {
     const data = await run(() => vps.computer(conn), { quiet: true });
-    if (data) setScreens(data.screens);
-    const id = botId || data?.screens[0]?.id;
-    if (id) {
-      const rows = await run(() => vps.routines(conn, id), { quiet: true });
-      if (rows) setRoutines(rows.routines);
-    }
+    if (data) setShell(data);
+  }
+
+  async function openComputer() {
+    go({ name: "computer" });
+    await refreshShell();
   }
 
   async function startOauth(provider: "grok" | "chatgpt") {
@@ -239,7 +292,7 @@ return (
           onBack={back}
           onDraft={(v) => setDraft(currentBot.id, v)}
           onSend={() => sendChat(currentBot.id)}
-          onComputer={() => openComputer(currentBot.id)}
+          onComputer={() => openComputer()}
           onProfile={() => go({ name: "profile", botId: currentBot.id })}
           onAttach={() =>
             setAttachNote("Photos and files attach on the VPS computer, not this preview camera.")
@@ -248,21 +301,13 @@ return (
       ) : null}
 
       {screen.name === "computer" ? (
-        <ComputerScreenView
-          screens={screens}
-          selectedId={screen.botId}
-          routines={routines}
+        <ShellScreen
+          shell={shell}
+          busy={busy}
           onBack={back}
-          onSelect={async (id) => {
-            go({ name: "computer", botId: id });
-            const rows = await run(() => vps.routines(conn, id), { quiet: true });
-            if (rows) setRoutines(rows.routines);
-          }}
-          onToggleRoutine={async (id, active) => {
-            const botId = screen.botId || screens[0]?.id;
-            if (!botId) return;
-            const rows = await run(() => vps.saveRoutine(conn, botId, { id, active }));
-            if (rows) setRoutines(rows.routines);
+          onExec={async (cmd) => {
+            const result = await run(() => vps.exec(conn, cmd));
+            if (result) setShell(result);
           }}
         />
       ) : null}
@@ -314,6 +359,7 @@ return (
       {screen.name === "new-agent" ? (
         <NewAgentScreen
           bots={bots}
+          auth={auth}
           onBack={back}
           onCreate={async (input) => {
             const created = await run(() => vps.createBot(conn, input));
@@ -354,9 +400,14 @@ return (
       {screen.name === "profile" && currentBot ? (
         <ProfileScreen
           bot={currentBot}
+          auth={auth}
           pinned={pinned.includes(currentBot.id)}
           onBack={back}
-          onComputer={() => openComputer(currentBot.id)}
+          onComputer={() => openComputer()}
+          onSaveModel={async (provider, model) => {
+            const updated = await run(() => vps.updateBot(conn, currentBot.id, { provider, model }));
+            if (updated) await refresh();
+          }}
           onPin={() => togglePin(currentBot.id)}
           onHide={() => {
             hideConv(currentBot.id);

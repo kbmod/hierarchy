@@ -40,8 +40,8 @@ export function SetupScreen() {
             Bots on your own computers.
           </h1>
           <p className="mt-3 max-w-sm text-[15px] leading-relaxed text-muted">
-            Same floor as Grok Bot: named teammates, a shared computer, routines, and group handoffs. The
-            computers are the two VPS boxes you already run.
+            Named teammates on VPS hosts you own. Each bot can use Grok, ChatGPT, or an API key. The screen
+            button is a shell on that machine — no desktop environment required.
           </p>
           <div className="mt-auto space-y-3 pt-10">
             <PrimaryButton onClick={() => setStep(1)}>Configure computers</PrimaryButton>
@@ -54,8 +54,8 @@ export function SetupScreen() {
         <>
           <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.03em]">Agent backends</h1>
           <p className="mt-2 text-[14px] text-muted">
-            Point at the Hierarchy agent on each VPS. Use <span className="font-medium text-fg">demo</span> for
-            the built-in computer in this preview.
+            Paste the agent URL on each VPS. In this preview, leave the URL as{" "}
+            <span className="font-medium text-fg">demo</span> to use the computer on this machine.
           </p>
           <div className="mt-6 space-y-5">
             {primary ? (
@@ -92,8 +92,8 @@ export function SetupScreen() {
         <>
           <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.03em]">Providers</h1>
           <p className="mt-2 text-[14px] leading-relaxed text-muted">
-            Sign in with Grok OAuth or ChatGPT OAuth on the VPS, or paste an API key. Credentials stay on the
-            agent, never in this phone UI.
+            Sign in with xAI (Grok) OAuth or ChatGPT OAuth on the VPS, or paste an API key. Tokens stay on the
+            agent, never in the phone UI.
           </p>
           <p className="mt-4 text-[13px] text-muted">
             You can connect Grok and ChatGPT from Settings after the floor is up. This preview can use the

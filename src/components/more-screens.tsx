@@ -12,6 +12,7 @@ import {
   TopBar,
 } from "@/components/chrome";
 import type { AuthStatus, Bot, Group } from "@/lib/types";
+import { defaultModel, modelsFor, PROVIDER_OPTIONS, providerLabel } from "@/lib/models";
 import { useApp, type AppearanceMode } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -93,10 +94,12 @@ export function BackendsScreen({
   const slots = useApp((s) => s.vps);
   const activeVpsId = useApp((s) => s.activeVpsId);
   const upsert = useApp((s) => s.upsertVps);
+  const addVps = useApp((s) => s.addVps);
+  const removeVps = useApp((s) => s.removeVps);
   const setActive = useApp((s) => s.setActiveVps);
   return (
     <Screen>
-      <TopBar onBack={onBack} title="Agent backends" subtitle="Two VPS slots" />
+      <TopBar onBack={onBack} title="Agent backends" subtitle="Bring your own VPS" />
       <div className="space-y-4 px-4 py-4">
         {slots.map((slot) => (
           <div key={slot.id} className="rounded-[24px] border border-line bg-surface p-4">
@@ -133,9 +136,19 @@ export function BackendsScreen({
                 />
               </Field>
               <GhostButton onClick={() => onTest(slot.id)}>Test connection</GhostButton>
+              {slots.length > 1 ? (
+                <button
+                  type="button"
+                  className="w-full py-2 text-[13px] text-danger"
+                  onClick={() => removeVps(slot.id)}
+                >
+                  Remove
+                </button>
+              ) : null}
             </div>
           </div>
         ))}
+        <GhostButton onClick={() => addVps()}>Add another VPS</GhostButton>
         {healthNote ? <Banner>{healthNote}</Banner> : null}
         <a
           href="/hierarchy-agent.tgz"
@@ -270,17 +283,28 @@ export function OauthScreen({
 
 export function NewAgentScreen({
   bots,
+  auth,
   onBack,
   onCreate,
 }: {
   bots: Bot[];
+  auth: AuthStatus | null;
   onBack: () => void;
-  onCreate: (input: { name: string; job: string; description: string; reports_to?: string }) => void;
+  onCreate: (input: {
+    name: string;
+    job: string;
+    description: string;
+    reports_to?: string;
+    provider?: string;
+    model?: string;
+  }) => void;
 }) {
   const [name, setName] = useState("");
   const [job, setJob] = useState("");
   const [description, setDescription] = useState("");
   const [reports, setReports] = useState("");
+  const [provider, setProvider] = useState("");
+  const [model, setModel] = useState("");
   return (
     <Screen>
       <TopBar onBack={onBack} title="New agent" />
@@ -293,6 +317,8 @@ export function NewAgentScreen({
             job,
             description,
             reports_to: reports || undefined,
+            provider: provider || undefined,
+            model: model || undefined,
           });
         }}
       >
@@ -323,6 +349,17 @@ export function NewAgentScreen({
             ))}
           </select>
         </Field>
+        <ProviderModelFields
+          auth={auth}
+          provider={provider}
+          model={model}
+          suggestions={modelsFor(provider)}
+          onProvider={(next) => {
+            setProvider(next);
+            setModel(defaultModel(next));
+          }}
+          onModel={setModel}
+        />
         <div className="mt-auto">
           <PrimaryButton type="submit" disabled={!name.trim() || !job.trim() || !description.trim()}>
             Create agent
@@ -489,33 +526,131 @@ export function SearchScreen({
 
 export function ProfileScreen({
   bot,
+  auth,
   onBack,
   onComputer,
   onPin,
   onHide,
+  onSaveModel,
   pinned,
 }: {
   bot: Bot;
+  auth: AuthStatus | null;
   onBack: () => void;
   onComputer: () => void;
   onPin: () => void;
   onHide: () => void;
+  onSaveModel: (provider: string, model: string) => void;
   pinned: boolean;
 }) {
+  const [provider, setProvider] = useState(bot.provider || "");
+  const [model, setModel] = useState(bot.model || "");
+  const suggestions = modelsFor(provider);
   return (
     <Screen>
       <TopBar onBack={onBack} title={bot.name} subtitle={bot.job} />
       <div className="flex flex-col items-center px-6 py-8 text-center">
         <BotAvatar name={bot.name} size="xl" />
         <p className="mt-4 text-[14px] leading-relaxed text-muted">{bot.description}</p>
-        {bot.reports_to ? <p className="mt-2 text-[12px] text-subtle">Reports to a lead on the floor</p> : null}
+        <p className="mt-2 text-[12px] text-subtle">
+          {providerLabel(bot.provider)}
+          {bot.model ? ` · ${bot.model}` : ""}
+        </p>
       </div>
-      <div className="space-y-2 px-4">
-        <GhostButton onClick={onComputer}>Open computer</GhostButton>
+      <div className="space-y-4 px-4 pb-10">
+        <ProviderModelFields
+          auth={auth}
+          provider={provider}
+          model={model}
+          suggestions={suggestions}
+          onProvider={(next) => {
+            setProvider(next);
+            if (!model || suggestions.includes(model)) {
+              setModel(defaultModel(next));
+            }
+          }}
+          onModel={setModel}
+        />
+        <PrimaryButton onClick={() => onSaveModel(provider, model)}>Save model</PrimaryButton>
+        <GhostButton onClick={onComputer}>Open shell</GhostButton>
         <GhostButton onClick={onPin}>{pinned ? "Unpin conversation" : "Pin conversation"}</GhostButton>
         <GhostButton onClick={onHide}>Hide conversation</GhostButton>
       </div>
     </Screen>
+  );
+}
+
+function ProviderModelFields({
+  auth,
+  provider,
+  model,
+  suggestions,
+  onProvider,
+  onModel,
+}: {
+  auth: AuthStatus | null;
+  provider: string;
+  model: string;
+  suggestions: string[];
+  onProvider: (value: string) => void;
+  onModel: (value: string) => void;
+}) {
+  function connected(id: string): boolean {
+    if (!id || id === "stub") return true;
+    if (id === "grok" || id === "chatgpt") return Boolean(auth?.oauth?.[id]?.configured);
+    return Boolean(auth?.keys?.[id]?.configured);
+  }
+  return (
+    <div className="space-y-3 rounded-[20px] border border-line bg-surface p-4">
+      <Field label="Provider">
+        <select
+          value={provider}
+          onChange={(e) => onProvider(e.target.value)}
+          className="h-12 w-full rounded-[16px] border border-line bg-bg px-3 text-[15px]"
+        >
+          {PROVIDER_OPTIONS.map((opt) => (
+            <option key={opt.id || "default"} value={opt.id}>
+              {opt.label}
+              {opt.id && !connected(opt.id) ? " — not connected" : ""}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {provider && provider !== "stub" ? (
+        <Field label="Model">
+          <TextField
+            value={model}
+            onChange={(e) => onModel(e.target.value)}
+            placeholder={suggestions[0] || "model id"}
+            autoCapitalize="none"
+            autoCorrect="off"
+          />
+          {suggestions.length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {suggestions.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => onModel(id)}
+                  className={cn(
+                    "rounded-full px-3 py-1 text-[12px]",
+                    model === id ? "bg-fg text-bg" : "bg-elevated text-muted",
+                  )}
+                >
+                  {id}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </Field>
+      ) : (
+        <p className="text-[13px] text-muted">
+          {provider === "stub"
+            ? "Stub replies locally. Connect a provider to run a real model."
+            : "Uses the VPS active provider until you pick one for this bot."}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -557,30 +692,34 @@ export function NewMenu({
 export function InstallScreen({ onBack }: { onBack: () => void }) {
   return (
     <Screen>
-      <TopBar onBack={onBack} title="Install" subtitle="Android" />
+      <TopBar onBack={onBack} title="Install" subtitle="Android APK" />
       <div className="space-y-4 px-5 py-5 text-[15px] leading-relaxed">
         <p>
-          Hierarchy is a phone app. Add it to your home screen for a full-screen Grok Bot floor, then point it at
-          your VPS.
+          Hierarchy is a native Android app. Sideload the APK, then point it at one or more VPS agents. Those
+          machines are the bots&apos; computers.
         </p>
         <ol className="list-decimal space-y-2 pl-5 text-[14px] text-muted">
-          <li>Open this app in Chrome or the Grok browser.</li>
-          <li>Tap the menu, then Install app or Add to Home screen.</li>
-          <li>Open Hierarchy from the launcher.</li>
-          <li>In Settings, set Primary and Backup agent URLs.</li>
+          <li>Install the APK (allow unknown sources if asked).</li>
+          <li>On each VPS, unpack the agent and run it with a token.</li>
+          <li>In the app: Settings → Agent backends → paste the URL and token.</li>
+          <li>Sign in with Grok OAuth or ChatGPT OAuth on Providers.</li>
         </ol>
+        <a
+          href="/hierarchy-debug.apk"
+          download="hierarchy-debug.apk"
+          className="flex h-12 w-full items-center justify-center rounded-[20px] bg-accent px-4 text-[15px] font-semibold text-accent-fg"
+        >
+          Download Android APK
+        </a>
         <a
           href="/hierarchy-agent.tgz"
           download="hierarchy-agent.tgz"
-          className="flex h-12 w-full items-center justify-center rounded-[20px] bg-accent px-4 text-[15px] font-semibold text-accent-fg"
+          className="flex h-12 w-full items-center justify-center rounded-[20px] border border-line bg-surface px-4 text-[15px] font-medium text-fg"
         >
           Download VPS agent
         </a>
-        <div className="rounded-[20px] bg-elevated p-4 text-[13px] text-muted">
-          Unpack it on your server, set a token, and run{" "}
-          <span className="font-mono text-fg">python3 -m hierarchy serve</span>. Then paste the URL
-          into Settings → Agent backends. This preview already has a demo computer so you can try
-          the floor now.
+        <div className="rounded-[20px] bg-elevated p-4 font-mono text-[12px] text-fg">
+          HIERARCHY_TOKEN=… PYTHONPATH=src python3 -m hierarchy serve --host 0.0.0.0 --port 8765
         </div>
       </div>
     </Screen>

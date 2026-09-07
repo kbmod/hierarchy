@@ -1,49 +1,65 @@
 # Hierarchy
 
-A small multi-bot runtime with a web client. Roster, isolated stores, in-process chat and DMs.
+A Grok Bot–style floor of always-on teammates. They live on **your** computers (one or more VPS hosts), not a rented cloud desktop.
 
-Each bot has its own directory. One process owns every bot. A DM is written to the target inbox and drained immediately.
+Message them like coworkers. They keep working after you leave the app. Sign in with **Grok (xAI) OAuth** or **ChatGPT OAuth**, or paste an API key.
 
-The web client talks to the agent on your VPS.
+The Android APK is the main client. A desktop shell comes later. This repo also has a web preview of the same UI.
 
-## Web client
+## What you get
+
+- Named bots (Atlas / Forge / Scout / Quill, or your own)
+- A real computer on the VPS: shell, files, HTTP, bot-to-bot DMs
+- Work continues in the background (jobs + routines)
+- Take over the computer for passwords / 2FA, then return control
+- One or more agent backends (primary + backups)
+- Device-code OAuth for Grok and ChatGPT; tokens stay on the VPS
+
+## Android APK
+
+```bash
+npm install
+bash scripts/build-apk.sh
+```
+
+The debug APK is written to `dist-apk/hierarchy-debug.apk` (and `public/hierarchy-debug.apk` for sideload from the web preview).
+
+On the phone: allow install from this source, open Hierarchy, add your VPS URL + token, then connect Grok or ChatGPT.
+
+## VPS agent (the computer)
+
+On each server:
+
+```bash
+tar -xzf hierarchy-agent.tgz
+export HIERARCHY_TOKEN="$(openssl rand -hex 24)"
+export HIERARCHY_HOME="$HOME/.hierarchy"
+PYTHONPATH=src python3 -m hierarchy serve --host 0.0.0.0 --port 8765
+```
+
+Then in the app: Settings → Agent backends → `http://YOUR_VPS:8765` and the token.
+
+```bash
+python3 -m hierarchy key xai "$XAI_API_KEY"
+python3 -m hierarchy login grok
+python3 -m hierarchy login chatgpt
+```
+
+Or use Providers in the app (device-code OAuth).
+
+- **Grok OAuth** → `https://api.x.ai/v1`
+- **ChatGPT OAuth** → Codex device flow (`chatgpt.com/backend-api/codex`)
+
+Health: `GET /api/health` (no token). Everything else requires `Authorization: Bearer $HIERARCHY_TOKEN` when the token is set.
+
+## Web preview
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Agent
-
-The Python runtime lives in `vps-agent/`.
-
-```bash
-export HIERARCHY_TOKEN="$(openssl rand -hex 24)"
-export HIERARCHY_HOME="$HOME/.hierarchy"
-cd vps-agent
-PYTHONPATH=src python3 -m hierarchy serve --host 0.0.0.0 --port 8765
-```
-
-Then in the app: Settings → Agent backends → paste `http://YOUR_VPS:8765` and the token.
-
-```bash
-# API keys
-python3 -m hierarchy key xai "$XAI_API_KEY"
-python3 -m hierarchy key openai "$OPENAI_API_KEY"
-
-# OAuth device login
-python3 -m hierarchy login grok
-python3 -m hierarchy login chatgpt
-```
-
-Or use the Providers screen in the app (device-code OAuth).
-
-- **Grok OAuth** → `https://api.x.ai/v1` with the access token
-- **ChatGPT OAuth** → Codex device flow (`chatgpt.com/backend-api/codex`)
-
-Health: `GET /api/health` (no token). Everything else requires `Authorization: Bearer $HIERARCHY_TOKEN` when the token is set.
-
-Store: `~/.hierarchy` (`HIERARCHY_HOME` overrides). Credentials: `~/.hierarchy/auth.json` (mode 600).
+Use agent URL `demo` to talk to a local agent on this machine.
 
 ## Tests
 

@@ -113,10 +113,14 @@ def public_status(data: dict[str, Any] | None = None, home: str | Path | None = 
     return {"active": data.get("active") or "stub", "keys": keys, "oauth": oauth}
 
 
-def credential(home: str | Path) -> dict[str, Any] | None:
-    """Resolved active credential for a model call, or None → stub replies."""
+def credential(home: str | Path, provider: str | None = None) -> dict[str, Any] | None:
+    """Resolved credential for a model call, or None → stub replies.
+
+    ``provider`` selects a specific connected backend. Otherwise the VPS-wide
+    active provider is used.
+    """
     data = load(home)
-    active = str(data.get("active") or "stub")
+    active = str(provider or data.get("active") or "stub").strip() or "stub"
     if active == "stub":
         return None
     if active in KEY_PROVIDERS:

@@ -21,6 +21,8 @@ export type Bot = {
   description: string;
   preview: string;
   reports_to: string | null;
+  provider?: string | null;
+  model?: string | null;
   status?: string;
 };
 
@@ -29,14 +31,21 @@ export type HistoryItem = {
   content: string;
 };
 
-export type ComputerScreen = {
-  id: string;
-  name: string;
-  job?: string;
+export type ShellState = {
   status: string;
-  title: string;
-  app: string;
+  cwd?: string;
   lines: string[];
+  updated_at: number;
+};
+
+export type Job = {
+  id: string;
+  bot_id: string;
+  kind: string;
+  status: "working" | "done" | "error" | string;
+  text: string;
+  error?: string | null;
+  created_at: number;
   updated_at: number;
 };
 

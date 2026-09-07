@@ -32,6 +32,27 @@ class AuthStoreTests(unittest.TestCase):
         reply = rt.chat(bot.id, "hello")
         self.assertIn("owl", reply.text)
 
+    def test_per_bot_provider_and_model(self) -> None:
+        auth.set_key(self.home, "xai", "xai-secret-key", model="grok-4.5")
+        auth.set_key(self.home, "openai", "openai-secret", model="gpt-4.1")
+        auth.set_active(self.home, "xai")
+        rt = Runtime(self.home)
+        grok_bot = rt.create("g", "Grok bot", "Uses grok", provider="xai", model="grok-4.6")
+        oai_bot = rt.create("o", "OpenAI bot", "Uses openai", provider="openai", model="gpt-4o")
+        stub_bot = rt.create("s", "Stub bot", "Offline", provider="stub")
+        self.assertEqual(rt.store.get(grok_bot.id).provider, "xai")
+        self.assertEqual(rt.store.get(grok_bot.id).model, "grok-4.6")
+        self.assertEqual(auth.credential(self.home, "openai")["provider"], "openai")
+        self.assertEqual(auth.credential(self.home)["provider"], "xai")
+        reply = rt.chat(stub_bot.id, "ping")
+        self.assertIn("s", reply.text)
+        missing = rt.create("m", "Missing", "No chatgpt", provider="chatgpt")
+        miss = rt.chat(missing.id, "hi")
+        self.assertIn("chatgpt", miss.text)
+        updated = rt.update(oai_bot.id, provider="xai", model="grok-4.5")
+        self.assertEqual(updated.provider, "xai")
+        self.assertEqual(updated.model, "grok-4.5")
+
 
 class CompletionsTests(unittest.TestCase):
     def test_chat_completions_reads_choice_text(self) -> None:

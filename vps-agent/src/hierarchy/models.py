@@ -10,6 +10,8 @@ class Bot:
     job: str
     description: str
     reports_to: str | None = None
+    provider: str | None = None
+    model: str | None = None
 
 
 @dataclass(frozen=True)
