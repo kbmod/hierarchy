@@ -1,0 +1,414 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChatScreen } from "@/components/chat-screen";
+import { ComputerScreenView } from "@/components/computer-screen";
+import { HomeScreen } from "@/components/home-screen";
+import {
+  BackendsScreen,
+  GroupChatScreen,
+  InstallScreen,
+  NewAgentScreen,
+  NewGroupScreen,
+  NewMenu,
+  OauthScreen,
+  ProfileScreen,
+  ProjectScreen,
+  ProvidersScreen,
+  SearchScreen,
+  SettingsScreen,
+  useResolvedTheme,
+} from "@/components/more-screens";
+import { SetupScreen } from "@/components/setup-screen";
+import { Banner } from "@/components/chrome";
+import type { AuthStatus, Bot, ComputerScreen, HistoryItem, Routine } from "@/lib/types";
+import { useApp } from "@/lib/store";
+import { uid } from "@/lib/utils";
+import { useAgent } from "@/lib/use-agent";
+import { vps } from "@/lib/vps";
+
+export function HierarchyApp() {
+  const stack = useApp((s) => s.stack);
+  const appearance = useApp((s) => s.appearance);
+  const hydrate = useApp((s) => s.hydrate);
+  const go = useApp((s) => s.go);
+  const back = useApp((s) => s.back);
+  const resetTo = useApp((s) => s.resetTo);
+  const busy = useApp((s) => s.busy);
+  const error = useApp((s) => s.error);
+  const drafts = useApp((s) => s.drafts);
+  const setDraft = useApp((s) => s.setDraft);
+  const groups = useApp((s) => s.groups);
+  const addGroup = useApp((s) => s.addGroup);
+  const updateGroup = useApp((s) => s.updateGroup);
+  const pinned = useApp((s) => s.pinned);
+  const hidden = useApp((s) => s.hidden);
+  const togglePin = useApp((s) => s.togglePin);
+  const hideConv = useApp((s) => s.hideConv);
+  const vpsSlots = useApp((s) => s.vps);
+  const setActiveVps = useApp((s) => s.setActiveVps);
+  const onboarded = useApp((s) => s.onboarded);
+  const { conn, run } = useAgent();
+  const theme = useResolvedTheme(appearance);
+
+  const [bots, setBots] = useState<Bot[]>([]);
+  const [auth, setAuth] = useState<AuthStatus | null>(null);
+  const [history, setHistory] = useState<Record<string, HistoryItem[]>>({});
+  const [screens, setScreens] = useState<ComputerScreen[]>([]);
+  const [routines, setRoutines] = useState<Routine[]>([]);
+  const [menu, setMenu] = useState(false);
+  const [query, setQuery] = useState("");
+  const [healthNote, setHealthNote] = useState<string | null>(null);
+  const [oauth, setOauth] = useState<{
+    session: string;
+    user_code: string;
+    uri: string;
+    pending: boolean;
+  } | null>(null);
+  const [groupHist, setGroupHist] = useState<Record<string, { role: string; content: string; name?: string }[]>>(
+    {},
+  );
+  const [attachNote, setAttachNote] = useState<string | null>(null);
+  const screen = stack[stack.length - 1] ?? { name: "home" as const };
+
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
+
+  const refresh = useCallback(async () => {
+    const roster = await run(() => vps.bots(conn), { quiet: true });
+    if (roster) setBots(roster.bots);
+    const status = await run(() => vps.auth(conn), { quiet: true });
+    if (status) setAuth(status);
+  }, [conn, run]);
+
+  useEffect(() => {
+    if (onboarded) void refresh();
+  }, [refresh, onboarded, conn.url, conn.token]);
+
+  const currentBot = useMemo(() => {
+    if (screen.name === "chat" || screen.name === "profile" || screen.name === "computer") {
+      const id = "botId" in screen ? screen.botId : undefined;
+      return bots.find((b) => b.id === id) ?? bots[0];
+    }
+    return undefined;
+  }, [screen, bots]);
+
+  async function openBot(id: string) {
+    go({ name: "chat", botId: id });
+    const data = await run(() => vps.history(conn, id), { quiet: true });
+    if (data) {
+      setHistory((h) => {
+        const local = h[id] || [];
+        if (local.length > data.history.length) return h;
+        return { ...h, [id]: data.history };
+      });
+    }
+  }
+
+  async function sendChat(botId: string) {
+    const text = (drafts[botId] || "").trim();
+    if (!text) return;
+    setDraft(botId, "");
+    setHistory((h) => ({
+      ...h,
+      [botId]: [...(h[botId] || []), { role: "user", content: text }],
+    }));
+    const reply = await run(() => vps.chat(conn, botId, text));
+    if (reply) {
+      setHistory((h) => ({
+        ...h,
+        [botId]: [...(h[botId] || []), { role: "assistant", content: reply.text }],
+      }));
+      await refresh();
+    }
+  }
+
+  async function openComputer(botId?: string) {
+    go({ name: "computer", botId });
+    const data = await run(() => vps.computer(conn), { quiet: true });
+    if (data) setScreens(data.screens);
+    const id = botId || data?.screens[0]?.id;
+    if (id) {
+      const rows = await run(() => vps.routines(conn, id), { quiet: true });
+      if (rows) setRoutines(rows.routines);
+    }
+  }
+
+  async function startOauth(provider: "grok" | "chatgpt") {
+    const start = await run(() => vps.oauthStart(conn, provider));
+    if (!start) return;
+    setOauth({
+      session: start.session,
+      user_code: start.user_code,
+      uri: start.verification_uri,
+      pending: true,
+    });
+    go({ name: "oauth", provider });
+    const tick = async () => {
+      const polled = await run(() => vps.oauthPoll(conn, start.session), { quiet: true });
+      if (polled?.ok) {
+        setOauth((o) => (o ? { ...o, pending: false } : o));
+        await refresh();
+        return;
+      }
+      setTimeout(tick, 3000);
+    };
+    setTimeout(tick, 2500);
+  }
+
+  async function kickoff(name: string, outcome: string, leadId?: string) {
+    const result = await run(() => vps.kickoff(conn, { name, outcome, lead_id: leadId }));
+    if (!result) return;
+    await refresh();
+    const leadBot = result.lead.bot_id;
+    setHistory((h) => ({
+      ...h,
+      [leadBot]: [
+        ...(h[leadBot] || []),
+        { role: "user", content: `Project ${name}: ${outcome}` },
+        { role: "assistant", content: result.lead.text },
+      ],
+    }));
+    if (result.specialist) {
+      const sid = result.specialist.bot_id;
+      setHistory((h) => ({
+        ...h,
+        [sid]: [...(h[sid] || []), { role: "assistant", content: result.specialist!.text }],
+      }));
+    }
+    resetTo({ name: "chat", botId: leadBot });
+  }
+
+  async function sendGroup(groupId: string) {
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return;
+    const text = (drafts[groupId] || "").trim();
+    if (!text) return;
+    setDraft(groupId, "");
+    setGroupHist((h) => ({
+      ...h,
+      [groupId]: [...(h[groupId] || []), { role: "user", content: text }],
+    }));
+    const mention = text.match(/@([A-Za-z0-9_-]+)/);
+    let targets = group.memberIds;
+    if (mention && mention[1].toLowerCase() !== "everyone") {
+      const named = bots.find((b) => b.name.toLowerCase() === mention[1].toLowerCase());
+      if (named) targets = [named.id];
+    }
+    for (const id of targets) {
+      const reply = await run(() => vps.chat(conn, id, `[group ${group.name}] ${text}`));
+      if (reply) {
+        const bot = bots.find((b) => b.id === id);
+        setGroupHist((h) => ({
+          ...h,
+          [groupId]: [...(h[groupId] || []), { role: "assistant", content: reply.text, name: bot?.name }],
+        }));
+      }
+    }
+    updateGroup(groupId, { preview: text, updatedAt: Date.now() });
+  }
+
+  const groupId = screen.name === "group" ? screen.groupId : "";
+  const activeGroup = groups.find((g) => g.id === groupId);
+
+return (
+    <div data-theme={theme} className="phone-frame mx-auto min-h-dvh max-w-lg bg-bg text-fg">
+      {screen.name === "setup" ? <SetupScreen /> : null}
+
+      {screen.name === "home" ? (
+        <HomeScreen
+          bots={bots}
+          groups={groups}
+          hidden={hidden}
+          pinned={pinned}
+          onOpenBot={openBot}
+          onOpenGroup={(id) => go({ name: "group", groupId: id })}
+          onSearch={() => go({ name: "search" })}
+          onNew={() => setMenu(true)}
+          onSettings={() => go({ name: "settings" })}
+          onComputer={() => openComputer()}
+        />
+      ) : null}
+
+      {screen.name === "chat" && currentBot ? (
+        <ChatScreen
+          bot={currentBot}
+          history={history[currentBot.id] || []}
+          draft={drafts[currentBot.id] || ""}
+          busy={busy}
+          error={error}
+          onBack={back}
+          onDraft={(v) => setDraft(currentBot.id, v)}
+          onSend={() => sendChat(currentBot.id)}
+          onComputer={() => openComputer(currentBot.id)}
+          onProfile={() => go({ name: "profile", botId: currentBot.id })}
+          onAttach={() =>
+            setAttachNote("Photos and files attach on the VPS computer, not this preview camera.")
+          }
+        />
+      ) : null}
+
+      {screen.name === "computer" ? (
+        <ComputerScreenView
+          screens={screens}
+          selectedId={screen.botId}
+          routines={routines}
+          onBack={back}
+          onSelect={async (id) => {
+            go({ name: "computer", botId: id });
+            const rows = await run(() => vps.routines(conn, id), { quiet: true });
+            if (rows) setRoutines(rows.routines);
+          }}
+          onToggleRoutine={async (id, active) => {
+            const botId = screen.botId || screens[0]?.id;
+            if (!botId) return;
+            const rows = await run(() => vps.saveRoutine(conn, botId, { id, active }));
+            if (rows) setRoutines(rows.routines);
+          }}
+        />
+      ) : null}
+
+      {screen.name === "settings" ? (
+        <SettingsScreen auth={auth} onBack={back} onOpen={(name) => go({ name })} />
+      ) : null}
+
+      {screen.name === "backends" ? (
+        <BackendsScreen
+          healthNote={healthNote}
+          onBack={back}
+          onTest={async (id) => {
+            const slot = vpsSlots.find((v) => v.id === id);
+            if (!slot) return;
+            setActiveVps(id);
+            const ping = await run(() => vps.health({ url: slot.url || "demo", token: slot.token }));
+            setHealthNote(ping?.ok ? `${slot.label} is reachable.` : "Unreachable.");
+          }}
+        />
+      ) : null}
+
+      {screen.name === "providers" ? (
+        <ProvidersScreen
+          auth={auth}
+          onBack={back}
+          onSaveKey={async (provider, key) => {
+            const status = await run(() => vps.setKey(conn, provider, key));
+            if (status) setAuth(status);
+          }}
+          onUse={async (provider) => {
+            const status = await run(() => vps.useProvider(conn, provider));
+            if (status) setAuth(status);
+          }}
+          onOauth={startOauth}
+        />
+      ) : null}
+
+      {screen.name === "oauth" && oauth ? (
+        <OauthScreen
+          provider={screen.provider}
+          userCode={oauth.user_code}
+          uri={oauth.uri}
+          pending={oauth.pending}
+          onBack={back}
+        />
+      ) : null}
+
+      {screen.name === "new-agent" ? (
+        <NewAgentScreen
+          bots={bots}
+          onBack={back}
+          onCreate={async (input) => {
+            const created = await run(() => vps.createBot(conn, input));
+            if (created) {
+              await refresh();
+              resetTo({ name: "chat", botId: created.id });
+            }
+          }}
+        />
+      ) : null}
+
+      {screen.name === "new-group" ? (
+        <NewGroupScreen
+          bots={bots}
+          onBack={back}
+          onCreate={(name, memberIds) => {
+            const id = uid();
+            addGroup({ id, name, memberIds, preview: "New group", updatedAt: Date.now() });
+            resetTo({ name: "group", groupId: id });
+          }}
+        />
+      ) : null}
+
+      {screen.name === "project" ? <ProjectScreen bots={bots} onBack={back} onKickoff={kickoff} /> : null}
+
+      {screen.name === "search" ? (
+        <SearchScreen
+          bots={bots}
+          groups={groups}
+          query={query}
+          onQuery={setQuery}
+          onBack={back}
+          onOpenBot={openBot}
+          onOpenGroup={(id) => go({ name: "group", groupId: id })}
+        />
+      ) : null}
+
+      {screen.name === "profile" && currentBot ? (
+        <ProfileScreen
+          bot={currentBot}
+          pinned={pinned.includes(currentBot.id)}
+          onBack={back}
+          onComputer={() => openComputer(currentBot.id)}
+          onPin={() => togglePin(currentBot.id)}
+          onHide={() => {
+            hideConv(currentBot.id);
+            resetTo({ name: "home" });
+          }}
+        />
+      ) : null}
+
+      {screen.name === "install" ? <InstallScreen onBack={back} /> : null}
+
+      {screen.name === "group" && activeGroup ? (
+        <GroupChatScreen
+          group={activeGroup}
+          bots={bots}
+          history={groupHist[activeGroup.id] || []}
+          draft={drafts[activeGroup.id] || ""}
+          busy={busy}
+          onBack={back}
+          onDraft={(v) => setDraft(activeGroup.id, v)}
+          onSend={() => sendGroup(activeGroup.id)}
+        />
+      ) : null}
+
+      {menu ? (
+        <NewMenu
+          onClose={() => setMenu(false)}
+          onAgent={() => {
+            setMenu(false);
+            go({ name: "new-agent" });
+          }}
+          onGroup={() => {
+            setMenu(false);
+            go({ name: "new-group" });
+          }}
+          onProject={() => {
+            setMenu(false);
+            go({ name: "project" });
+          }}
+        />
+      ) : null}
+
+      {attachNote ? (
+        <button type="button" className="fixed inset-x-4 bottom-24 z-30" onClick={() => setAttachNote(null)}>
+          <Banner>{attachNote}</Banner>
+        </button>
+      ) : null}
+
+      {error && screen.name === "home" ? (
+        <div className="fixed inset-x-4 bottom-24">
+          <Banner tone="danger">{error}</Banner>
+        </div>
+      ) : null}
+    </div>
+  );
+}

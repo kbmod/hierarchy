@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -7,6 +8,26 @@ dist/
 build/
 .venv/
 venv/
+
+# Node
+node_modules/
+.node_modules.lock
+*.tsbuildinfo
+
+# Tooling / local
+.tanstack/
+.vercel/
+.grok/
+.DS_Store
+*.log
+.env
+.env.*
+
+# QA / generated
+screenshots/
+artifacts/
+
+# Android (if present)
 android/.gradle/
 android/app/build/
 android/local.properties
