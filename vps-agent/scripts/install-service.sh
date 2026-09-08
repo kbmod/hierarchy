@@ -221,7 +221,11 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now hierarchy.service
+systemctl enable hierarchy.service
+if ! systemctl restart hierarchy.service; then
+  echo "failed to restart hierarchy.service after installing the updated service configuration" >&2
+  exit 1
+fi
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 TS_IP=""

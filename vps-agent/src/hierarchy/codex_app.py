@@ -269,7 +269,11 @@ class CodexAppClient:
                             "title": "Hierarchy",
                             "version": "0.1",
                         },
-                        "capabilities": {},
+                        # ``runtimeWorkspaceRoots`` is part of Codex's
+                        # experimental app-server surface.  The server
+                        # rejects thread/start when the client does not
+                        # explicitly opt into that capability.
+                        "capabilities": {"experimentalApi": True},
                     },
                     timeout=self.timeout,
                 )

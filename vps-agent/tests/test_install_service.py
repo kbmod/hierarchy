@@ -36,6 +36,23 @@ class InstallerContractTests(unittest.TestCase):
         ):
             self.assertIn(fragment, self.source)
 
+    def test_install_reloads_enables_and_restarts_updated_service(self) -> None:
+        self.assertIn("systemctl daemon-reload", self.source)
+        self.assertIn("systemctl enable hierarchy.service", self.source)
+        self.assertIn("if ! systemctl restart hierarchy.service; then", self.source)
+        self.assertIn(
+            'failed to restart hierarchy.service after installing the updated service configuration',
+            self.source,
+        )
+        self.assertLess(
+            self.source.index("systemctl daemon-reload"),
+            self.source.index("systemctl enable hierarchy.service"),
+        )
+        self.assertLess(
+            self.source.index("systemctl enable hierarchy.service"),
+            self.source.index("systemctl restart hierarchy.service"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

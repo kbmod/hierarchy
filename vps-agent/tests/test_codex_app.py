@@ -126,6 +126,8 @@ class CodexAppClientTests(unittest.TestCase):
             [request.get("method") for request in self.process.requests],
             ["initialize", "initialized"],
         )
+        initialize = self.process.requests[0]
+        self.assertEqual(initialize["params"]["capabilities"], {"experimentalApi": True})
         client.close()
 
     @unittest.skipUnless(os.name == "posix", "POSIX process sessions only")
