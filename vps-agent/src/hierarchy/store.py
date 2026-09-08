@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +71,32 @@ class Store:
         self.get(bot_id)
         (self.bot_dir(bot_id) / "instructions.md").write_text(text, encoding="utf-8")
 
+    def codex_state(self, bot_id: str) -> dict[str, Any]:
+        """Return the non-secret Codex session metadata for a bot.
+
+        A missing or unreadable session is treated as a fresh session.  The
+        next successful turn replaces it atomically, so a partial write can
+        never leave the runtime with a half-valid JSON document.
+        """
+        self.get(bot_id)
+        path = self.bot_dir(bot_id) / "codex.json"
+        if not path.exists():
+            return {}
+        try:
+            data = _read_json(path)
+        except (OSError, ValueError, TypeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def write_codex_state(self, bot_id: str, state: dict[str, Any]) -> None:
+        """Persist only non-secret, per-bot Codex session metadata."""
+        self.get(bot_id)
+        if not isinstance(state, dict):
+            raise TypeError("Codex state must be a JSON object")
+        allowed = {"thread_id", "turn_id", "cwd", "model", "provider"}
+        clean = {key: value for key, value in state.items() if key in allowed and value is not None}
+        _write_json_atomic(self.bot_dir(bot_id) / "codex.json", clean, mode=0o600)
+
     def append(self, bot_id: str, role: str, content: str) -> None:
         path = self.bot_dir(bot_id) / "history.jsonl"
         with path.open("a", encoding="utf-8") as handle:
@@ -116,6 +144,34 @@ def _bot_from_dict(data: dict[str, Any]) -> Bot:
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _write_json_atomic(path: Path, payload: Any, *, mode: int | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = handle.name
+            handle.write(json.dumps(payload, indent=2))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None:
+            os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
 
 def _read_json(path: Path) -> Any:

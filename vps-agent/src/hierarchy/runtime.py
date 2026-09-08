@@ -6,17 +6,29 @@ depend on a UI tab, a lease, or another product. Bots drive a real computer
 """
 from __future__ import annotations
 
+from dataclasses import replace
+import os
 import re
 import threading
 import uuid
 from pathlib import Path
+from typing import Any
 
 from hierarchy import computer, inbox, tools
 from hierarchy.llm import CompleteFn, complete as llm_complete
-from dataclasses import replace
 
 from hierarchy.models import Bot, ChatReply
 from hierarchy.store import Store
+
+try:
+    from hierarchy.codex_app import CodexAppClient, CodexAppError, CodexTurnResult
+except ImportError:  # The adapter is optional until Codex is configured.
+    CodexAppClient = None  # type: ignore[assignment,misc]
+
+    class CodexAppError(RuntimeError):
+        pass
+
+    CodexTurnResult = Any  # type: ignore[misc,assignment]
 
 MAX_TOOL_STEPS = 12
 
@@ -45,7 +57,27 @@ class Runtime:
         self.home = str(self.store.root)
         self._complete = complete
         self._act_depth = threading.local()
+        self._codex_lock_guard = threading.Lock()
+        self._codex_locks: dict[str, threading.Lock] = {}
+        self._codex_clients: dict[tuple[str, str], Any] = {}
+        self._codex_closed = False
         tools.workspace(Path(self.home))
+
+    def close(self) -> None:
+        """Close cached Codex app-server clients; safe to call more than once."""
+        with self._codex_lock_guard:
+            if self._codex_closed:
+                return
+            self._codex_closed = True
+            clients = list(self._codex_clients.values())
+            self._codex_clients.clear()
+        for client in clients:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                # Shutdown is best effort; one broken child must not prevent
+                # the remaining cached clients from being closed.
+                continue
 
     def create(
         self,
@@ -161,7 +193,10 @@ class Runtime:
         try:
             reply = self._say(bot, text)
         except Exception as exc:  # noqa: BLE001
-            computer.mark_idle(bot_dir, extra_line=f"error: {exc}")
+            # The API may return the provider's diagnostic, but the computer
+            # screen is user-visible state and must not receive arbitrary
+            # exception text (which can contain URLs, arguments, or tokens).
+            computer.mark_idle(bot_dir, extra_line=_computer_error_line(exc))
             raise
         self.store.append(bot.id, "assistant", reply)
         computer.mark_idle(bot_dir, extra_line="done.")
@@ -212,7 +247,113 @@ class Runtime:
         history = list(self.store.history(bot.id))
         if self._complete is not None:
             return self._complete(bot, instructions, history, text)
+        if self._use_codex(bot):
+            return self._codex_turn(bot, instructions, text)
         return self._act(bot, instructions, history, text)
+
+    def _use_codex(self, bot: Bot) -> bool:
+        if (bot.provider or "").strip().lower() != "chatgpt":
+            return False
+        backend = os.environ.get("HIERARCHY_CHATGPT_BACKEND", "auto").strip().lower() or "auto"
+        if backend not in {"auto", "http", "codex"}:
+            raise CodexAppError(
+                "HIERARCHY_CHATGPT_BACKEND must be one of auto, http, or codex"
+            )
+        if backend == "http":
+            return False
+        configured = bool(
+            os.environ.get("HIERARCHY_CODEX_BIN", "").strip()
+            and os.environ.get("HIERARCHY_CODEX_HOME", "").strip()
+        )
+        if backend == "codex" and not configured:
+            raise CodexAppError(
+                "Codex backend requested, but HIERARCHY_CODEX_BIN and "
+                "HIERARCHY_CODEX_HOME are both required"
+            )
+        return configured
+
+    def _codex_lock(self, bot_id: str) -> threading.Lock:
+        with self._codex_lock_guard:
+            lock = self._codex_locks.get(bot_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._codex_locks[bot_id] = lock
+            return lock
+
+    def _codex_turn(self, bot: Bot, instructions: str, text: str) -> str:
+        if CodexAppClient is None:
+            raise CodexAppError("Codex app-server adapter is not installed")
+        bot_dir = self.store.bot_dir(bot.id)
+        work_dir = tools.bot_work(Path(self.home), bot.id)
+        with self._codex_lock(bot.id):
+            state = self.store.codex_state(bot.id)
+            client = self._new_codex_client()
+
+            def on_event(event: Any) -> None:
+                line = _codex_event_line(event)
+                if line:
+                    computer.append_line(bot_dir, line, status="working")
+
+            try:
+                result: CodexTurnResult = client.run_turn(
+                    thread_id=state.get("thread_id") or None,
+                    cwd=str(work_dir),
+                    model=bot.model,
+                    instructions=instructions,
+                    text=text,
+                    on_event=on_event,
+                )
+            except CodexAppError as exc:
+                if not state.get("thread_id") or not _is_stale_codex_thread_error(exc):
+                    raise
+                # A persisted thread can disappear after Codex history
+                # cleanup.  Retry once as a new thread; auth, transport,
+                # timeout, and turn errors must remain visible to the caller.
+                result = client.run_turn(
+                    thread_id=None,
+                    cwd=str(work_dir),
+                    model=bot.model,
+                    instructions=instructions,
+                    text=text,
+                    on_event=on_event,
+                )
+            status = str(_result_value(result, "status") or "completed").lower()
+            if status not in {"completed", "success"}:
+                raise CodexAppError(f"Codex turn ended with status {status}")
+            reply = _codex_result_text(result)
+            thread_id = _result_value(result, "thread_id")
+            if thread_id:
+                self.store.write_codex_state(
+                    bot.id,
+                    {
+                        "thread_id": thread_id,
+                        "turn_id": _result_value(result, "turn_id"),
+                        "cwd": str(work_dir),
+                        "model": bot.model,
+                        "provider": bot.provider,
+                    },
+                )
+            return reply
+
+    def _new_codex_client(self) -> Any:
+        """Construct the adapter with the explicitly configured runtime paths."""
+        binary = os.environ.get("HIERARCHY_CODEX_BIN", "").strip()
+        codex_home = os.environ.get("HIERARCHY_CODEX_HOME", "").strip()
+        config = (binary, codex_home)
+        with self._codex_lock_guard:
+            if self._codex_closed:
+                raise CodexAppError("Hierarchy runtime is closed")
+            client = self._codex_clients.get(config)
+            if client is not None:
+                return client
+            try:
+                client = CodexAppClient(binary=binary, codex_home=codex_home)
+            except TypeError as exc:
+                raise CodexAppError(
+                    "Codex app-server adapter has an incompatible constructor"
+                ) from exc
+            self._codex_clients[config] = client
+            return client
 
     def _act(self, bot: Bot, instructions: str, history: list[dict[str, str]], text: str) -> str:
         depth = getattr(self._act_depth, "n", 0)
@@ -270,3 +411,109 @@ def _clean_opt(value: str | None) -> str | None:
         return None
     text = value.strip()
     return text or None
+
+
+_EVENT_TOKEN = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+_STATUS_TOKENS = {
+    "completed",
+    "error",
+    "failed",
+    "in_progress",
+    "interrupted",
+    "pending",
+    "running",
+    "started",
+    "success",
+    "waiting",
+}
+
+
+def _codex_event_line(event: Any) -> str:
+    """Project protocol metadata only; never display command/output arguments."""
+    if not isinstance(event, dict):
+        return ""
+    raw_kind = str(event.get("type") or event.get("method") or event.get("event") or "")
+    # App-server methods use a slash separator; normalize that protocol
+    # punctuation to a safe marker instead of exposing arbitrary strings.
+    kind = raw_kind.strip().replace("/", "_")
+    kind = _event_token(kind) or "event"
+    params = event.get("params") if isinstance(event.get("params"), dict) else {}
+    item = params.get("item") if isinstance(params.get("item"), dict) else {}
+    values: list[str] = []
+    item_type = _event_token(item.get("type"))
+    if item_type:
+        values.append(f"item={item_type}")
+    status = _status_token(params.get("status") or item.get("status"))
+    if status:
+        values.append(f"status={status}")
+    # A basename can orient the user without exposing command lines, output,
+    # URLs, or arbitrary event payloads.  Command fields are intentionally not
+    # considered even when they contain a useful-looking path.
+    for key in ("filePath", "path", "cwd", "filename"):
+        basename = _safe_basename(item.get(key) or params.get(key))
+        if basename:
+            values.append(f"name={basename}")
+            break
+    line = "codex " + kind[:80]
+    if values:
+        line += " " + " ".join(values)
+    return line[:240]
+
+
+def _event_token(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if _EVENT_TOKEN.fullmatch(text) else ""
+
+
+def _status_token(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    return text if text in _STATUS_TOKENS else ""
+
+
+def _safe_basename(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or "://" in text or "\n" in text or "\r" in text:
+        return ""
+    text = text.replace("\\", "/").rstrip("/")
+    basename = text.rsplit("/", 1)[-1]
+    return basename[:80] if _EVENT_TOKEN.fullmatch(basename) else ""
+
+
+def _computer_error_line(exc: BaseException) -> str:
+    """Return a bounded, non-secret error marker for the computer screen."""
+    kind = _event_token(type(exc).__name__) or "error"
+    if isinstance(exc, CodexAppError):
+        raw_method = str(getattr(exc, "method", "") or "").strip().replace("/", "_")
+        method = _event_token(raw_method)
+        return f"error codex method={method}" if method else "error codex"
+    return f"error {kind}"
+
+
+def _result_value(result: Any, field: str) -> Any:
+    if isinstance(result, dict):
+        return result.get(field)
+    return getattr(result, field, None)
+
+
+def _codex_result_text(result: Any) -> str:
+    text = _result_value(result, "text")
+    if text is None:
+        raise CodexAppError("Codex app-server returned no reply text")
+    return str(text).strip()
+
+
+def _is_stale_codex_thread_error(exc: CodexAppError) -> bool:
+    """Return true only for a resume failure that clearly means thread loss."""
+    if getattr(exc, "method", None) != "thread/resume":
+        return False
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "thread not found",
+            "unknown thread",
+            "no such thread",
+            "thread does not exist",
+            "invalid thread",
+        )
+    )

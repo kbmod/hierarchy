@@ -14,6 +14,7 @@ class JobBoard:
     def __init__(self, workers: int = 4) -> None:
         self._lock = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
+        self._closed = False
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bot")
 
     def submit(self, *, bot_id: str, kind: str, fn: JobFn) -> dict[str, Any]:
@@ -29,9 +30,24 @@ class JobBoard:
             "updated_at": time.time(),
         }
         with self._lock:
+            if self._closed:
+                raise RuntimeError("job board is closed")
             self._jobs[job_id] = row
-        self._pool.submit(self._run, job_id, fn)
+            try:
+                # Keep submission under the same lock as the closed check so
+                # shutdown cannot race between accepting the row and handing
+                # it to the executor.
+                self._pool.submit(self._run, job_id, fn)
+            except RuntimeError:
+                self._jobs.pop(job_id, None)
+                raise RuntimeError("job board is closed") from None
         return dict(row)
+
+    def close(self, wait: bool = True) -> None:
+        """Stop accepting jobs and drain or cancel the executor."""
+        with self._lock:
+            self._closed = True
+        self._pool.shutdown(wait=wait, cancel_futures=not wait)
 
     def _run(self, job_id: str, fn: JobFn) -> None:
         try:

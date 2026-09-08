@@ -13,14 +13,154 @@ ENV_FILE=/etc/hierarchy.env
 UNIT=/etc/systemd/system/hierarchy.service
 HOME_DIR=/var/lib/hierarchy
 
+PARSED_ENV_VALUE=""
+read_env_value() {
+  local key="$1" raw
+  PARSED_ENV_VALUE=""
+  raw="$(awk -v key="$key" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' "$ENV_FILE")"
+  [ -n "$raw" ] || return 1
+  case "$raw" in
+    \"*\") PARSED_ENV_VALUE="${raw:1:${#raw}-2}" ;;
+    \'*\') PARSED_ENV_VALUE="${raw:1:${#raw}-2}" ;;
+    *\"*|*\'*) return 2 ;;
+    *) PARSED_ENV_VALUE="$raw" ;;
+  esac
+  [ -n "$PARSED_ENV_VALUE" ] || return 3
+}
+
+EXISTING_SERVICE_USER=""
+EXISTING_CHATGPT_BACKEND=""
+EXISTING_CODEX_BIN=""
+EXISTING_CODEX_HOME=""
+if [ -e "$ENV_FILE" ]; then
+  if [ -L "$ENV_FILE" ]; then
+    echo "refusing symlinked environment file: $ENV_FILE" >&2
+    exit 1
+  fi
+  if [ ! -f "$ENV_FILE" ]; then
+    echo "environment path is not a regular file: $ENV_FILE" >&2
+    exit 1
+  fi
+  for key in HIERARCHY_SERVICE_USER HIERARCHY_CHATGPT_BACKEND HIERARCHY_CODEX_BIN HIERARCHY_CODEX_HOME; do
+    if read_env_value "$key"; then
+      if [ "$key" = HIERARCHY_SERVICE_USER ]; then EXISTING_SERVICE_USER="$PARSED_ENV_VALUE"
+      elif [ "$key" = HIERARCHY_CHATGPT_BACKEND ]; then EXISTING_CHATGPT_BACKEND="$PARSED_ENV_VALUE"
+      elif [ "$key" = HIERARCHY_CODEX_BIN ]; then EXISTING_CODEX_BIN="$PARSED_ENV_VALUE"
+      else EXISTING_CODEX_HOME="$PARSED_ENV_VALUE"
+      fi
+    else
+      status=$?
+      if [ "$status" -ne 1 ]; then
+        echo "malformed $key assignment in $ENV_FILE" >&2
+        exit 1
+      fi
+    fi
+  done
+fi
+
+# Never install the agent as root.  With sudo, SUDO_USER is the operator who owns the
+# Codex login and is therefore the safest default for the service account too.
+SERVICE_USER="${HIERARCHY_SERVICE_USER:-${EXISTING_SERVICE_USER:-${SUDO_USER:-}}}"
+if [ -z "$SERVICE_USER" ] || [ "$SERVICE_USER" = root ]; then
+  echo "refusing a root/unknown service user; set HIERARCHY_SERVICE_USER or run via sudo" >&2
+  exit 1
+fi
+if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+  echo "unknown HIERARCHY_SERVICE_USER: $SERVICE_USER" >&2
+  exit 1
+fi
+SERVICE_UID="$(id -u "$SERVICE_USER")"
+if [ "$SERVICE_UID" -eq 0 ]; then
+  echo "refusing to install hierarchy.service for uid 0 ($SERVICE_USER)" >&2
+  exit 1
+fi
+SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
+SERVICE_HOME="$(getent passwd "$SERVICE_USER" | awk -F: 'NR == 1 { print $6 }')"
+if [ -z "$SERVICE_HOME" ] || [ "$SERVICE_HOME" = / ]; then
+  echo "could not resolve a usable home directory for $SERVICE_USER" >&2
+  exit 1
+fi
+
 if [ ! -d "$ROOT/src/hierarchy" ]; then
   echo "expected $ROOT/src/hierarchy" >&2
   exit 1
 fi
+if ! runuser -u "$SERVICE_USER" -- test -r "$ROOT/src/hierarchy" -a -x "$ROOT/src/hierarchy"; then
+  echo "$SERVICE_USER cannot read/traverse $ROOT/src/hierarchy" >&2
+  exit 1
+fi
+if [ -L "$HOME_DIR" ]; then
+  echo "refusing symlinked hierarchy home: $HOME_DIR" >&2
+  exit 1
+fi
+install -d -m 700 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$HOME_DIR"
 
-mkdir -p "$HOME_DIR"
-chmod 700 "$HOME_DIR"
+CODEX_BIN="${HIERARCHY_CODEX_BIN:-${EXISTING_CODEX_BIN:-}}"
+if [ -n "$CODEX_BIN" ]; then
+  if [ ! -x "$CODEX_BIN" ] || [ -d "$CODEX_BIN" ]; then
+    echo "HIERARCHY_CODEX_BIN is not an executable file: $CODEX_BIN" >&2
+    exit 1
+  fi
+else
+  # Prefer the service user's normal per-user installation, then a system install.
+  # This checks paths only; it never opens auth.json or any other credential file.
+  if [ -x "$SERVICE_HOME/.local/bin/codex" ] && [ ! -d "$SERVICE_HOME/.local/bin/codex" ]; then
+    CODEX_BIN="$SERVICE_HOME/.local/bin/codex"
+  elif command -v codex >/dev/null 2>&1; then
+    CODEX_BIN="$(command -v codex)"
+  fi
+fi
 
+CODEX_HOME="${HIERARCHY_CODEX_HOME:-${EXISTING_CODEX_HOME:-}}"
+if [ -n "$CODEX_HOME" ] && [ -z "$CODEX_BIN" ]; then
+  echo "HIERARCHY_CODEX_HOME requires an executable HIERARCHY_CODEX_BIN or an installed codex" >&2
+  exit 1
+fi
+if [ -n "$CODEX_BIN" ]; then
+  CODEX_HOME="${CODEX_HOME:-$SERVICE_HOME/.codex}"
+  case "$CODEX_HOME" in
+    /*) ;;
+    *) echo "HIERARCHY_CODEX_HOME must be an absolute path: $CODEX_HOME" >&2; exit 1 ;;
+  esac
+  if [ -L "$CODEX_HOME" ] || { [ -e "$CODEX_HOME" ] && [ ! -d "$CODEX_HOME" ]; }; then
+    echo "HIERARCHY_CODEX_HOME must be a real directory: $CODEX_HOME" >&2
+    exit 1
+  fi
+  if [ ! -e "$CODEX_HOME" ]; then
+    install -d -m 700 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$CODEX_HOME"
+  elif ! runuser -u "$SERVICE_USER" -- test -r "$CODEX_HOME" -a -x "$CODEX_HOME"; then
+    echo "$SERVICE_USER cannot read/traverse HIERARCHY_CODEX_HOME: $CODEX_HOME" >&2
+    exit 1
+  fi
+  if ! runuser -u "$SERVICE_USER" -- test -x "$CODEX_BIN"; then
+    echo "$SERVICE_USER cannot execute HIERARCHY_CODEX_BIN: $CODEX_BIN" >&2
+    exit 1
+  fi
+fi
+
+# A previous root-installed service may have left state files behind.  Limit the
+# ownership migration to this exact, validated service directory; chown does not
+# follow symlinks in the directory tree.
+find "$HOME_DIR" -xdev -exec chown --no-dereference "$SERVICE_USER:$SERVICE_GROUP" {} +
+
+set_env_line() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    sed -i "/^${key}=/c\\${key}=${value}" "$ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$value" >>"$ENV_FILE"
+  fi
+}
+
+remove_env_line() {
+  local key="$1"
+  sed -i "/^${key}=/d" "$ENV_FILE"
+}
+
+if [ -L "$ENV_FILE" ]; then
+  echo "refusing symlinked environment file: $ENV_FILE" >&2
+  exit 1
+fi
 if [ ! -f "$ENV_FILE" ]; then
   TOKEN="$(openssl rand -hex 24)"
   umask 077
@@ -33,15 +173,29 @@ EOF
   CREATED_TOKEN=1
 else
   CREATED_TOKEN=0
-  # keep existing token; refresh paths
-  TOKEN="$(. "$ENV_FILE"; printf '%s' "${HIERARCHY_TOKEN:-}")"
-  grep -q '^HIERARCHY_HOME=' "$ENV_FILE" || echo "HIERARCHY_HOME=$HOME_DIR" >>"$ENV_FILE"
-  if grep -q '^PYTHONPATH=' "$ENV_FILE"; then
-    sed -i "s|^PYTHONPATH=.*|PYTHONPATH=$ROOT/src|" "$ENV_FILE"
-  else
-    echo "PYTHONPATH=$ROOT/src" >>"$ENV_FILE"
+  # Keep only the existing Hierarchy token. Never execute an environment file as root.
+  if ! read_env_value HIERARCHY_TOKEN; then
+    echo "$ENV_FILE has no non-empty HIERARCHY_TOKEN" >&2
+    exit 1
   fi
+  TOKEN="$PARSED_ENV_VALUE"
 fi
+
+set_env_line HIERARCHY_HOME "$HOME_DIR"
+set_env_line PYTHONPATH "$ROOT/src"
+set_env_line HIERARCHY_SERVICE_USER "$SERVICE_USER"
+set_env_line HIERARCHY_SERVICE_GROUP "$SERVICE_GROUP"
+set_env_line HIERARCHY_SERVICE_HOME "$SERVICE_HOME"
+set_env_line HIERARCHY_CHATGPT_BACKEND "${HIERARCHY_CHATGPT_BACKEND:-${EXISTING_CHATGPT_BACKEND:-auto}}"
+if [ -n "$CODEX_BIN" ]; then
+  set_env_line HIERARCHY_CODEX_BIN "$CODEX_BIN"
+  set_env_line HIERARCHY_CODEX_HOME "$CODEX_HOME"
+else
+  remove_env_line HIERARCHY_CODEX_BIN
+  remove_env_line HIERARCHY_CODEX_HOME
+fi
+chmod 600 "$ENV_FILE"
+chown root:root "$ENV_FILE"
 
 cat >"$UNIT" <<EOF
 [Unit]
@@ -52,8 +206,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=$ENV_FILE
+Environment=HOME=$SERVICE_HOME
+Environment=PATH=$SERVICE_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=$ROOT
 ExecStart=$PYTHON -m hierarchy serve --host 0.0.0.0 --port 8765
+User=$SERVICE_USER
+Group=$SERVICE_GROUP
 Restart=always
 RestartSec=2
 NoNewPrivileges=true
@@ -86,6 +244,14 @@ else
   echo "  Open TCP 8765 on the firewall / security group."
 fi
 echo "  Token: $TOKEN"
+echo "  Service user: $SERVICE_USER ($SERVICE_GROUP), HOME=$SERVICE_HOME"
+if [ -n "$CODEX_BIN" ]; then
+  echo "  Codex runtime: $CODEX_BIN (CODEX_HOME=$CODEX_HOME)"
+  echo "  Authenticate Codex as $SERVICE_USER; Codex owns auth.json refresh and rotation."
+  echo "  Codex runs unattended in isolated bot workdirs; approval/escalation requests are denied."
+else
+  echo "  Codex runtime: not detected (Grok/API-key installs are unchanged)"
+fi
 echo
 echo "Status:  systemctl status hierarchy"
 echo "Logs:    journalctl -u hierarchy -f"

@@ -167,7 +167,10 @@ export function HierarchyApp() {
 
   async function waitJob(jobId: string, botId: string) {
     const c = botConn(botId);
-    for (let i = 0; i < 90; i += 1) {
+    // Codex turns can take a little over two minutes on a busy VPS. Keep the
+    // mobile client polling long enough to cover that normal server timeout.
+    const maxPolls = 150;
+    for (let i = 0; i < maxPolls; i += 1) {
       await new Promise((r) => setTimeout(r, 1200));
       const job = await run(() => vps.job(c, jobId), { quiet: true });
       const hist = await run(() => vps.history(c, botId), { quiet: true });
@@ -181,6 +184,9 @@ export function HierarchyApp() {
         return;
       }
     }
+    useApp.getState().setError(
+      "This turn is still running on the VPS. Reopen the conversation shortly to refresh it.",
+    );
   }
 
   async function sendChat(botId: string) {
@@ -220,6 +226,9 @@ export function HierarchyApp() {
   }
 
   async function startOauth(provider: "grok" | "chatgpt") {
+    if (provider === "chatgpt" && auth?.codex?.backend !== "http") {
+      return;
+    }
     const start = await run(() => vps.oauthStart(conn, provider));
     if (!start) return;
     setOauth({

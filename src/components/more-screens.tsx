@@ -176,18 +176,47 @@ export function ProvidersScreen({
 }) {
   const [key, setKey] = useState("");
   const [prov, setProv] = useState<"xai" | "openai" | "openrouter">("xai");
+  const codex = auth?.codex;
+  const codexMessage = !codex
+    ? "Codex status is unavailable."
+    : !codex.available
+      ? "Codex app-server is unavailable on this VPS. Ask the operator to install/configure Codex, or set HIERARCHY_CHATGPT_BACKEND=http for Hierarchy's legacy ChatGPT OAuth."
+      : !codex.authenticated
+        ? "Codex is installed but not signed in. Run codex login as the service user (device auth), then refresh this screen."
+        : "Codex is signed in and owns ChatGPT credential refresh.";
   return (
     <Screen>
       <TopBar onBack={onBack} title="Providers" subtitle="xAI and ChatGPT" />
       <div className="space-y-4 px-4 py-4">
         <p className="text-[13px] leading-relaxed text-muted">
-          OAuth uses the same public device-code clients as Grok CLI and Codex. Tokens are stored on the VPS at
-          ~/.hierarchy/auth.json.
+          Grok OAuth and API keys are stored by Hierarchy on the VPS. ChatGPT subscription access is owned by the
+          Codex CLI when the Codex app-server backend is selected; Codex keeps and refreshes its own credentials.
         </p>
         <div className="grid grid-cols-2 gap-2">
           <PrimaryButton onClick={() => onOauth("grok")}>Grok OAuth</PrimaryButton>
-          <GhostButton onClick={() => onOauth("chatgpt")}>ChatGPT OAuth</GhostButton>
+          <GhostButton
+            onClick={auth?.codex?.backend === "http" ? () => onOauth("chatgpt") : undefined}
+            className={auth?.codex?.backend === "http" ? undefined : "opacity-60"}
+          >
+            {auth?.codex?.backend === "http" ? "ChatGPT OAuth" : "ChatGPT login via Codex"}
+          </GhostButton>
         </div>
+        {codex && codex.backend !== "http" ? (
+          <div className="rounded-[20px] border border-line bg-surface p-4 text-[13px] leading-relaxed text-muted">
+            <div className="font-medium text-fg">
+              {codex.authenticated ? "Codex app-server connected" : codex.available ? "Codex sign-in required" : "Codex unavailable"}
+            </div>
+            <p className="mt-1">{codexMessage}</p>
+            {codex.available || codex.authenticated ? (
+              <p className="mt-1">Codex runs unattended in each bot workspace; approval/escalation requests are denied.</p>
+            ) : null}
+          </div>
+        ) : null}
+        {codex?.backend === "http" ? (
+          <p className="rounded-[20px] border border-line bg-surface p-4 text-[13px] leading-relaxed text-muted">
+            Explicit HTTP mode is enabled. ChatGPT OAuth below is stored by Hierarchy; Codex app-server login is not used.
+          </p>
+        ) : null}
         <div className="rounded-[24px] border border-line bg-surface p-4">
           <Field label="API key fallback">
             <select
@@ -620,7 +649,13 @@ function ProviderModelFields({
 }) {
   function connected(id: string): boolean {
     if (!id || id === "stub") return true;
-    if (id === "grok" || id === "chatgpt") return Boolean(auth?.oauth?.[id]?.configured);
+    if (id === "grok") return Boolean(auth?.oauth?.[id]?.configured);
+    if (id === "chatgpt") {
+      return Boolean(
+        auth?.oauth?.chatgpt?.configured ||
+          (auth?.codex?.selected && auth.codex.authenticated),
+      );
+    }
     return Boolean(auth?.keys?.[id]?.configured);
   }
   return (
@@ -633,7 +668,7 @@ function ProviderModelFields({
         >
           {PROVIDER_OPTIONS.map((opt) => (
             <option key={opt.id || "default"} value={opt.id}>
-              {opt.label}
+              {opt.id === "chatgpt" && auth?.codex?.selected ? "ChatGPT via Codex" : opt.label}
               {opt.id && !connected(opt.id) ? " — not connected" : ""}
             </option>
           ))}
@@ -644,12 +679,24 @@ function ProviderModelFields({
           <TextField
             value={model}
             onChange={(e) => onModel(e.target.value)}
-            placeholder={suggestions[0] || "model id"}
+            placeholder={provider === "chatgpt" ? "Default Codex model" : suggestions[0] || "model id"}
             autoCapitalize="none"
             autoCorrect="off"
           />
           {suggestions.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-2">
+              {provider === "chatgpt" ? (
+                <button
+                  type="button"
+                  onClick={() => onModel("")}
+                  className={cn(
+                    "rounded-full px-3 py-1 text-[12px]",
+                    !model ? "bg-fg text-bg" : "bg-elevated text-muted",
+                  )}
+                >
+                  Default
+                </button>
+              ) : null}
               {suggestions.map((id) => (
                 <button
                   key={id}
@@ -670,7 +717,7 @@ function ProviderModelFields({
         <p className="text-[13px] text-muted">
           {provider === "stub"
             ? "Stub replies locally. Connect a provider to run a real model."
-            : "Uses the VPS active provider until you pick one for this bot."}
+            : "Uses the VPS active provider until you pick one for this bot. Choose ChatGPT via Codex to use the service user's subscription login."}
         </p>
       )}
     </div>

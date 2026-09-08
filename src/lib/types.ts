@@ -12,6 +12,15 @@ export type AuthStatus = {
   active: ProviderId | string;
   keys: Record<string, { configured: boolean; model?: string; base_url?: string }>;
   oauth: Record<string, { configured: boolean; model?: string; expires_at?: number }>;
+  codex?: {
+    backend: "auto" | "http" | "codex" | string;
+    selected?: boolean;
+    available: boolean;
+    authenticated: boolean;
+    credentialOwner?: string | null;
+    binary?: string | null;
+    home?: string | null;
+  };
 };
 
 export type Bot = {

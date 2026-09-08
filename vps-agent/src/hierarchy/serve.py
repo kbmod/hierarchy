@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 import uuid
@@ -13,6 +14,10 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from hierarchy import auth, computer, oauth, projects, tools
+try:
+    from hierarchy import codex_app
+except ImportError:  # pragma: no cover - optional runtime dependency
+    codex_app = None  # type: ignore[assignment]
 from hierarchy.jobs import JobBoard
 from hierarchy.runtime import Runtime
 from hierarchy.seed import ensure_floor
@@ -29,6 +34,84 @@ def default_home() -> Path:
 
 def _token() -> str:
     return (os.environ.get("HIERARCHY_TOKEN") or "").strip()
+
+
+def _codex_status() -> dict[str, Any]:
+    """Return non-secret status for the optional Codex-owned ChatGPT backend."""
+    backend = (os.environ.get("HIERARCHY_CHATGPT_BACKEND") or "auto").strip().lower() or "auto"
+    if backend not in {"auto", "http", "codex"}:
+        backend = "auto"
+    binary = (os.environ.get("HIERARCHY_CODEX_BIN") or "").strip()
+    codex_home = (os.environ.get("HIERARCHY_CODEX_HOME") or "").strip()
+    configured = bool(binary and codex_home)
+    available = bool(
+        configured
+        and os.path.isfile(binary)
+        and os.access(binary, os.X_OK)
+        and os.path.isdir(codex_home)
+        and os.access(codex_home, os.R_OK | os.X_OK)
+    )
+    authenticated = False
+    if available:
+        helper = getattr(codex_app, "public_status", None) if codex_app is not None else None
+        if callable(helper):
+            try:
+                result = helper(binary=binary, codex_home=codex_home)
+                if isinstance(result, dict):
+                    authenticated = bool(
+                        result.get("authenticated", result.get("logged_in", result.get("configured", False)))
+                    )
+            except Exception:
+                authenticated = False
+        else:
+            environment = {
+                key: os.environ[key]
+                for key in ("HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR")
+                if key in os.environ
+            }
+            environment["CODEX_HOME"] = codex_home
+            try:
+                result = subprocess.run(
+                    [binary, "login", "status"],
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=5,
+                )
+                authenticated = result.returncode == 0
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                authenticated = False
+    selected = backend == "codex" or (backend == "auto" and configured)
+    return {
+        "backend": backend,
+        "selected": selected,
+        "available": available,
+        "authenticated": authenticated,
+        "credentialOwner": "codex" if configured else None,
+        "binary": binary or None,
+        "home": codex_home or None,
+    }
+
+
+def _auth_status(rt: Runtime) -> dict[str, Any]:
+    status = auth.public_status(home=rt.home)
+    status["codex"] = _codex_status()
+    return status
+
+
+def _chatgpt_oauth_error(provider: str) -> str | None:
+    backend = (os.environ.get("HIERARCHY_CHATGPT_BACKEND") or "auto").strip().lower() or "auto"
+    if provider != "chatgpt" or backend == "http":
+        return None
+    service_user = os.environ.get("HIERARCHY_SERVICE_USER") or "the service user"
+    return (
+        "ChatGPT login is owned by Codex app-server in "
+        f"{backend} mode. Authenticate Codex as {service_user}: "
+        f"sudo -u {service_user} -H codex login (device auth), "
+        "or set HIERARCHY_CHATGPT_BACKEND=http for Hierarchy OAuth."
+    )
 
 
 class Server:
@@ -58,8 +141,18 @@ class Server:
 
     def shutdown(self) -> None:
         self._stop.set()
-        self._httpd.shutdown()
-        self._httpd.server_close()
+        try:
+            # Stop new background work before closing the HTTP listener, then
+            # let in-flight jobs finish before their runtime is torn down.
+            self.jobs.close(wait=True)
+        finally:
+            try:
+                self._httpd.shutdown()
+                self._httpd.server_close()
+            finally:
+                close = getattr(self.runtime, "close", None)
+                if callable(close):
+                    close()
 
 
 def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
@@ -132,7 +225,7 @@ def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 self._json(401, {"error": "unauthorized"})
                 return
             if path == "/api/auth":
-                self._json(200, auth.public_status(home=rt.home))
+                self._json(200, _auth_status(rt))
                 return
             if path == "/api/bots":
                 self._json(200, {"bots": rt.roster()})
@@ -206,19 +299,23 @@ def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 if path == "/api/auth/key":
-                    status = auth.set_key(
+                    auth.set_key(
                         rt.home,
                         str(payload.get("provider") or ""),
                         str(payload.get("api_key") or ""),
                         model=str(payload["model"]) if payload.get("model") else None,
                     )
-                    self._json(200, status)
+                    self._json(200, _auth_status(rt))
                     return
                 if path == "/api/auth/use":
-                    self._json(200, auth.set_active(rt.home, str(payload.get("provider") or "")))
+                    auth.set_active(rt.home, str(payload.get("provider") or ""))
+                    self._json(200, _auth_status(rt))
                     return
                 if path == "/api/auth/oauth/start":
                     provider = str(payload.get("provider") or "")
+                    oauth_error = _chatgpt_oauth_error(provider)
+                    if oauth_error:
+                        raise ValueError(oauth_error)
                     pending = (
                         oauth.start_grok()
                         if provider == "grok"
@@ -252,7 +349,7 @@ def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
                         self._json(200, {"ok": False, "pending": True})
                         return
                     server.pending_oauth.pop(sid, None)
-                    self._json(200, {"ok": True, **auth.set_oauth(rt.home, pending.provider, tokens)})
+                    self._json(200, {"ok": True, **_auth_status(rt)})
                     return
                 if path == "/api/floor":
                     bots = ensure_floor(rt)
@@ -533,18 +630,31 @@ _PAGE = """<!doctype html>
     <div id="roster"></div>
     <p class="muted">Model</p>
     <div id="auth-status" class="muted"></div>
+    <div id="codex-status" class="muted"></div>
     <select id="provider" style="width:100%;margin-top:8px">
       <option value="stub">stub (offline)</option>
       <option value="xai">xAI API key</option>
       <option value="openai">OpenAI API key</option>
       <option value="openrouter">OpenRouter API key</option>
       <option value="grok">Grok OAuth</option>
-      <option value="chatgpt">ChatGPT OAuth</option>
+      <option value="chatgpt">ChatGPT via Codex</option>
     </select>
     <input id="apikey" type="password" placeholder="API key" style="margin-top:8px;width:100%">
     <button id="save-key" style="margin-top:8px;width:100%">Save key</button>
-    <button id="oauth" style="margin-top:8px;width:100%">OAuth device login</button>
+    <button id="oauth" style="margin-top:8px;width:100%" disabled>OAuth device login</button>
     <p id="oauth-hint" class="muted"></p>
+    <p class="muted">Bot provider / model</p>
+    <select id="bot-provider" style="width:100%;margin-top:8px">
+      <option value="">Default (VPS active)</option>
+      <option value="stub">Stub (offline)</option>
+      <option value="grok">Grok OAuth</option>
+      <option value="xai">xAI API key</option>
+      <option value="chatgpt">ChatGPT via Codex</option>
+      <option value="openai">OpenAI API key</option>
+      <option value="openrouter">OpenRouter</option>
+    </select>
+    <input id="bot-model" placeholder="Default model (leave blank)" style="margin-top:8px;width:100%">
+    <button id="save-bot" style="margin-top:8px;width:100%">Save selected bot</button>
     <p class="muted">New bot</p>
     <input id="name" placeholder="name">
     <input id="job" placeholder="job" style="margin-top:8px">
@@ -562,6 +672,7 @@ _PAGE = """<!doctype html>
 </main>
 <script>
 let current = null;
+let authState = null;
 async function j(url, opts){ const r = await fetch(url, opts); return r.json(); }
 async function loadRoster(){
   const data = await j('/api/bots');
@@ -578,6 +689,8 @@ async function loadRoster(){
 async function openBot(bot){
   current = bot.id;
   document.getElementById('title').textContent = bot.name + ' · ' + bot.job;
+  document.getElementById('bot-provider').value = bot.provider || '';
+  document.getElementById('bot-model').value = bot.model || '';
   const data = await j('/api/bots/' + bot.id + '/history');
   document.getElementById('log').textContent = data.history.map(m => m.role + ': ' + m.content).join('\\n\\n');
   await loadRoster();
@@ -587,10 +700,25 @@ document.getElementById('create').onclick = async () => {
     name: document.getElementById('name').value,
     job: document.getElementById('job').value,
     description: document.getElementById('desc').value,
+    provider: document.getElementById('bot-provider').value || undefined,
+    model: document.getElementById('bot-model').value || undefined,
   })});
   document.getElementById('name').value = '';
   document.getElementById('job').value = '';
   document.getElementById('desc').value = '';
+  document.getElementById('bot-provider').value = '';
+  document.getElementById('bot-model').value = '';
+  await loadRoster();
+};
+document.getElementById('save-bot').onclick = async () => {
+  if (!current) {
+    document.getElementById('oauth-hint').textContent = 'Select a bot first.';
+    return;
+  }
+  await j('/api/bots/' + current, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+    provider: document.getElementById('bot-provider').value,
+    model: document.getElementById('bot-model').value,
+  })});
   await loadRoster();
 };
 document.getElementById('composer').onsubmit = async (e) => {
@@ -606,9 +734,37 @@ loadRoster();
 loadAuth();
 async function loadAuth(){
   const s = await j('/api/auth');
+  authState = s;
   document.getElementById('auth-status').textContent = 'active: ' + s.active;
   document.getElementById('provider').value = s.active || 'stub';
+  const codex = s.codex || {};
+  const status = document.getElementById('codex-status');
+  const option = document.querySelector('#provider option[value="chatgpt"]');
+  if (codex.backend === 'http') {
+    status.textContent = 'HTTP mode: ChatGPT OAuth is owned by Hierarchy.';
+    option.textContent = 'ChatGPT OAuth (HTTP)';
+  } else if (!codex.available) {
+    status.textContent = 'Codex unavailable: install/configure Codex, or set HIERARCHY_CHATGPT_BACKEND=http.';
+    option.textContent = 'ChatGPT via Codex (unavailable)';
+  } else if (!codex.authenticated) {
+    status.textContent = 'Codex sign-in required: run codex login as the service user (device auth).';
+    option.textContent = 'ChatGPT via Codex (sign-in required)';
+  } else {
+    status.textContent = 'Codex signed in: ChatGPT credentials are owned and refreshed by Codex.';
+    option.textContent = 'ChatGPT via Codex (connected)';
+  }
+  updateOauthUi();
 }
+function updateOauthUi(){
+  const provider = document.getElementById('provider').value;
+  const codex = authState && authState.codex;
+  const allowed = provider === 'grok' || (provider === 'chatgpt' && codex && codex.backend === 'http');
+  const button = document.getElementById('oauth');
+  button.disabled = !allowed;
+  button.textContent = provider === 'grok' ? 'Grok OAuth device login' :
+    allowed ? 'ChatGPT OAuth device login' : 'ChatGPT login via Codex';
+}
+document.getElementById('provider').onchange = updateOauthUi;
 document.getElementById('save-key').onclick = async () => {
   const provider = document.getElementById('provider').value;
   if (provider === 'stub' || provider === 'grok' || provider === 'chatgpt') {
@@ -623,8 +779,13 @@ document.getElementById('save-key').onclick = async () => {
 };
 document.getElementById('oauth').onclick = async () => {
   const provider = document.getElementById('provider').value;
+  const codex = authState && authState.codex;
   if (provider !== 'grok' && provider !== 'chatgpt') {
     document.getElementById('oauth-hint').textContent = 'Pick Grok OAuth or ChatGPT OAuth first.';
+    return;
+  }
+  if (provider === 'chatgpt' && (!codex || codex.backend !== 'http')) {
+    document.getElementById('oauth-hint').textContent = 'ChatGPT login is owned by Codex. Run codex login as the service user, or set HIERARCHY_CHATGPT_BACKEND=http.';
     return;
   }
   const start = await j('/api/auth/oauth/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({provider})});
