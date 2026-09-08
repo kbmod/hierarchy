@@ -15,10 +15,10 @@ export function VpsHowto() {
         <li>SSH in. You need Python 3 — no extra packages.</li>
         <li>Run the commands below. The installer prints a URL and a token, then you can disconnect.</li>
         <li>
-          Paste the printed URL and token here. If you only reach the VPS over Tailscale, use{" "}
-          <span className="font-medium text-fg">http://100.x.x.x:8765</span> (from{" "}
-          <span className="font-mono text-[12px] text-fg">tailscale ip -4</span> on the VPS) or the MagicDNS
-          name. The phone needs the Tailscale app too. You do not open a public firewall port.
+          Paste the token and a Tailscale <span className="font-medium text-fg">100.x.x.x</span> URL from{" "}
+          <span className="font-mono text-[12px] text-fg">tailscale ip -4</span> on the VPS. Do not use the
+          .ts.net MagicDNS name in this app — Android cannot resolve it here. The phone needs Tailscale
+          connected. You do not open a public firewall port.
         </li>
       </ol>
       <pre className="overflow-x-auto rounded-[16px] bg-elevated p-3 font-mono text-[11px] leading-relaxed text-fg">

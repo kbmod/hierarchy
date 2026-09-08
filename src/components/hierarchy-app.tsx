@@ -498,8 +498,8 @@ return (
         </button>
       ) : null}
 
-      {error && screen.name === "home" ? (
-        <div className="fixed inset-x-4 bottom-24">
+      {error ? (
+        <div className="fixed inset-x-4 bottom-24 z-30">
           <Banner tone="danger">{error}</Banner>
         </div>
       ) : null}

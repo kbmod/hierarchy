@@ -11,11 +11,18 @@ export class VpsError extends Error {
 
 type Conn = { url: string; token: string };
 
+export function normalizeAgentUrl(raw: string): string {
+  let value = raw.trim();
+  if (!value || value === "demo") return value;
+  if (!/^https?:\/\//i.test(value)) value = `http://${value}`;
+  return value.replace(/\/+$/, "");
+}
+
 function isLocalDemo(url: string): boolean {
   const value = url.trim().toLowerCase();
   if (!value || value === "demo") return true;
   try {
-    const parsed = new URL(value.includes("://") ? value : `http://${value}`);
+    const parsed = new URL(normalizeAgentUrl(value));
     return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
   } catch {
     return false;
@@ -27,7 +34,7 @@ async function directCall<T>(conn: Conn, method: "GET" | "POST", path: string, b
   if (!raw || raw === "demo") {
     throw new VpsError("Set a VPS agent URL in Settings → Agent backends.");
   }
-  const base = raw.replace(/\/$/, "");
+  const base = normalizeAgentUrl(raw);
   const url = `${base}${path.startsWith("/") ? path : `/${path}`}`;
   const headers: Record<string, string> = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -86,16 +93,72 @@ async function proxyCall<T>(conn: Conn, method: "GET" | "POST", path: string, bo
   }
 }
 
+async function nativeHttpCall<T>(
+  conn: Conn,
+  method: "GET" | "POST",
+  path: string,
+  body?: unknown,
+  timeoutMs = 90_000,
+): Promise<T> {
+  const raw = conn.url.trim();
+  if (!raw || raw === "demo") {
+    throw new VpsError("Set a VPS agent URL in Settings → Agent backends.");
+  }
+  const base = normalizeAgentUrl(raw);
+  const url = `${base}${path.startsWith("/") ? path : `/${path}`}`;
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const token = conn.token.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const { CapacitorHttp } = await import("@capacitor/core");
+  let result: { status: number; data: unknown };
+  try {
+    result = await CapacitorHttp.request({
+      url,
+      method,
+      headers,
+      data: method === "POST" ? (body ?? {}) : undefined,
+      connectTimeout: timeoutMs,
+      readTimeout: timeoutMs,
+      responseType: "json",
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new VpsError(
+      `${message} (native GET/POST ${url}). If this is Tailscale, confirm the Tailscale VPN is on and hierarchy.service is listening on 0.0.0.0:8765.`,
+    );
+  }
+  const parsed =
+    typeof result.data === "string"
+      ? (() => {
+          try {
+            return JSON.parse(result.data || "{}") as unknown;
+          } catch {
+            throw new VpsError(`Agent returned non-JSON (${result.status}) from ${url}`);
+          }
+        })()
+      : (result.data ?? {});
+  if (result.status < 200 || result.status >= 300) {
+    const err = parsed as { error?: string };
+    throw new VpsError(err.error || `Agent error ${result.status} from ${url}`, result.status);
+  }
+  return parsed as T;
+}
+
 async function call<T>(conn: Conn, method: "GET" | "POST", path: string, body?: unknown, timeoutMs?: number): Promise<T> {
-  const native = isNativeApp();
-  if (native || !isLocalDemo(conn.url)) {
+  if (import.meta.env.VITE_APK === "1" || isNativeApp()) {
+    return nativeHttpCall<T>(conn, method, path, body, timeoutMs);
+  }
+  if (!isLocalDemo(conn.url)) {
     return directCall<T>(conn, method, path, body, timeoutMs);
   }
   return proxyCall<T>(conn, method, path, body, timeoutMs);
 }
 
 export const vps = {
-  health: (c: Conn) => call<{ ok: boolean; auth?: boolean; bots?: number; computer?: boolean }>(c, "GET", "/api/health", undefined, 8000),
+  health: (c: Conn, timeoutMs = 20_000) =>
+    call<{ ok: boolean; auth?: boolean; bots?: number; computer?: boolean }>(c, "GET", "/api/health", undefined, timeoutMs),
   auth: (c: Conn) => call<AuthStatus>(c, "GET", "/api/auth"),
   bots: (c: Conn) => call<{ bots: Bot[] }>(c, "GET", "/api/bots"),
   history: (c: Conn, id: string) => call<{ history: HistoryItem[] }>(c, "GET", `/api/bots/${id}/history`),

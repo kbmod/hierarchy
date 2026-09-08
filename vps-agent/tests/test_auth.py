@@ -53,6 +53,21 @@ class AuthStoreTests(unittest.TestCase):
         self.assertEqual(updated.provider, "xai")
         self.assertEqual(updated.model, "grok-4.5")
 
+    def test_grok_and_chatgpt_oauth_coexist_and_resolve_per_bot(self) -> None:
+        auth.set_oauth(self.home, "grok", {"access_token": "grok-token"})
+        auth.set_oauth(self.home, "chatgpt", {"access_token": "chatgpt-token"})
+
+        data = auth.load(self.home)
+        self.assertEqual(set(data["oauth"]), {"grok", "chatgpt"})
+        self.assertEqual(auth.credential(self.home, "grok")["access_token"], "grok-token")
+        self.assertEqual(auth.credential(self.home, "chatgpt")["access_token"], "chatgpt-token")
+
+        rt = Runtime(self.home)
+        grok_bot = rt.create("g", "Grok bot", "Uses Grok OAuth", provider="grok", model="grok-4.5")
+        chatgpt_bot = rt.create("c", "ChatGPT bot", "Uses ChatGPT OAuth", provider="chatgpt", model="gpt-5.4")
+        self.assertEqual(rt.store.get(grok_bot.id).provider, "grok")
+        self.assertEqual(rt.store.get(chatgpt_bot.id).provider, "chatgpt")
+
 
 class CompletionsTests(unittest.TestCase):
     def test_chat_completions_reads_choice_text(self) -> None:
@@ -111,9 +126,14 @@ class GrokOauthTests(unittest.TestCase):
 class ChatgptOauthTests(unittest.TestCase):
     def test_device_then_token_exchange(self) -> None:
         def http(method, url, **kwargs):
+            self.assertEqual(kwargs.get("headers"), oauth.CHATGPT_HEADERS)
             if url.endswith("/deviceauth/usercode"):
                 return 200, {"deviceAuthId": "id-1", "userCode": "WXYZ", "intervalSeconds": 1, "expires_in": 60}
             if url.endswith("/deviceauth/token"):
+                self.assertEqual(
+                    kwargs.get("json_body"),
+                    {"device_auth_id": "id-1", "user_code": "WXYZ"},
+                )
                 return 200, {"authorizationCode": "acode", "codeVerifier": "verif"}
             if url.endswith("/oauth/token"):
                 form = kwargs.get("form") or {}
@@ -128,6 +148,31 @@ class ChatgptOauthTests(unittest.TestCase):
         assert tokens is not None
         self.assertEqual(tokens["access_token"], "chat-atk")
 
+    def test_only_forbidden_and_not_found_mean_pending(self) -> None:
+        pending = oauth.DevicePending(
+            provider="chatgpt",
+            user_code="WXYZ",
+            verification_uri=oauth.CHATGPT_VERIFY_URL,
+            interval=1,
+            expires_at=0,
+            extra={"device_auth_id": "id-1"},
+        )
+
+        for status in (403, 404):
+            with self.subTest(status=status):
+                self.assertIsNone(
+                    oauth.poll_chatgpt(
+                        pending,
+                        http=lambda method, url, **kwargs: (_ for _ in ()).throw(HttpError(status, "pending", url)),
+                    )
+                )
+
+        with self.assertRaises(HttpError):
+            oauth.poll_chatgpt(
+                pending,
+                http=lambda method, url, **kwargs: (_ for _ in ()).throw(HttpError(400, "invalid", url)),
+            )
+
 
 class LlmMessagesTests(unittest.TestCase):
     def test_system_prompt_from_instructions(self) -> None:
@@ -136,6 +181,23 @@ class LlmMessagesTests(unittest.TestCase):
         self.assertEqual(msgs[0], {"role": "system", "content": "Stay in role."})
         self.assertEqual(msgs[-1]["content"], "hi")
         self.assertEqual(sum(1 for m in msgs if m["content"] == "hi"), 1)
+
+    def test_chatgpt_completion_uses_codex_request_headers(self) -> None:
+        def http(method, url, **kwargs):
+            self.assertEqual(url, "https://chatgpt.com/backend-api/codex/responses")
+            headers = kwargs["headers"]
+            self.assertEqual(headers["originator"], "codex_cli_rs")
+            self.assertEqual(headers["User-Agent"], "Hierarchy/1.0")
+            self.assertEqual(headers["Authorization"], "Bearer opaque-token")
+            return 200, {"output_text": "done"}
+
+        result = llm.chatgpt_complete(
+            "opaque-token",
+            "gpt-5.4",
+            [{"role": "user", "content": "hello"}],
+            http=http,
+        )
+        self.assertEqual(result, "done")
 
 
 if __name__ == "__main__":

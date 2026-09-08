@@ -24,6 +24,10 @@ CHATGPT_DEVICE_TOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/toke
 CHATGPT_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CHATGPT_DEVICE_REDIRECT = "https://auth.openai.com/deviceauth/callback"
 CHATGPT_VERIFY_URL = "https://auth.openai.com/codex/device"
+CHATGPT_HEADERS = {
+    "originator": "codex_cli_rs",
+    "User-Agent": "Hierarchy/1.0",
+}
 
 
 @dataclass
@@ -95,6 +99,7 @@ def start_chatgpt(*, http: HttpFn = request) -> DevicePending:
         "POST",
         CHATGPT_DEVICE_CODE_URL,
         json_body={"client_id": CHATGPT_CLIENT_ID},
+        headers=CHATGPT_HEADERS,
         timeout=30,
     )
     if not isinstance(body, dict):
@@ -122,14 +127,14 @@ def poll_chatgpt(pending: DevicePending, *, http: HttpFn = request) -> dict[str,
             "POST",
             CHATGPT_DEVICE_TOKEN_URL,
             json_body={
-                "client_id": CHATGPT_CLIENT_ID,
                 "device_auth_id": pending.extra["device_auth_id"],
                 "user_code": pending.user_code,
             },
+            headers=CHATGPT_HEADERS,
             timeout=30,
         )
     except HttpError as exc:
-        if exc.status in {403, 404, 400}:
+        if exc.status in {403, 404}:
             return None
         raise
     if not isinstance(body, dict):
@@ -154,6 +159,7 @@ def _exchange_chatgpt(code: str, verifier: str, *, http: HttpFn) -> dict[str, An
             "redirect_uri": CHATGPT_DEVICE_REDIRECT,
             "code_verifier": verifier,
         },
+        headers=CHATGPT_HEADERS,
         timeout=30,
     )
     if not isinstance(body, dict) or not body.get("access_token"):
@@ -186,6 +192,7 @@ def refresh_oauth(home: str, provider: str, *, http: HttpFn = request) -> dict[s
                 "refresh_token": str(row["refresh_token"]),
                 "client_id": CHATGPT_CLIENT_ID,
             },
+            headers=CHATGPT_HEADERS,
             timeout=30,
         )
     else:

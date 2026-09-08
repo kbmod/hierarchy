@@ -77,6 +77,7 @@ def chat_completions(base_url: str, api_key: str, model: str, messages: list[dic
 
 def chatgpt_complete(access_token: str, model: str, messages: list[dict[str, str]], *, http=request) -> str:
     headers = {
+        **oauth.CHATGPT_HEADERS,
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }

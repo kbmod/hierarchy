@@ -12,6 +12,11 @@ const config: CapacitorConfig = {
     allowMixedContent: true,
     backgroundColor: "#0c0c0d",
   },
+  plugins: {
+    CapacitorHttp: {
+      enabled: true,
+    },
+  },
 };
 
 export default config;
