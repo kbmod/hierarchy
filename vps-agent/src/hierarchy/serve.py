@@ -98,10 +98,20 @@ def _codex_status() -> dict[str, Any]:
 def _auth_status(rt: Runtime) -> dict[str, Any]:
     status = auth.public_status(home=rt.home)
     status["codex"] = _codex_status()
+    if rt._hermes is not None:
+        hermes = rt._hermes.status()
+        status["hermes"] = hermes
+        oauth_status = status.setdefault("oauth", {})
+        for provider, configured in (hermes.get("authenticated") or {}).items():
+            if configured:
+                oauth_status.setdefault(provider, {})["configured"] = True
     return status
 
 
 def _chatgpt_oauth_error(provider: str) -> str | None:
+    agent_backend = (os.environ.get("HIERARCHY_AGENT_BACKEND") or "auto").strip().lower()
+    if agent_backend == "hermes":
+        return None
     backend = (os.environ.get("HIERARCHY_CHATGPT_BACKEND") or "auto").strip().lower() or "auto"
     if provider != "chatgpt" or backend == "http":
         return None
@@ -112,6 +122,13 @@ def _chatgpt_oauth_error(provider: str) -> str | None:
         f"sudo -u {service_user} -H codex login (device auth), "
         "or set HIERARCHY_CHATGPT_BACKEND=http for Hierarchy OAuth."
     )
+
+
+def _persist_oauth(rt: Runtime, provider: str, tokens: dict[str, Any]) -> None:
+    """Persist once for legacy visibility and once for the Hermes runtime."""
+    auth.set_oauth(rt.home, provider, tokens)
+    if rt._hermes is not None:
+        rt._hermes.import_oauth(provider, tokens)
 
 
 class Server:
@@ -348,6 +365,7 @@ def _make_handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     if tokens is None:
                         self._json(200, {"ok": False, "pending": True})
                         return
+                    _persist_oauth(rt, pending.provider, tokens)
                     server.pending_oauth.pop(sid, None)
                     self._json(200, {"ok": True, **_auth_status(rt)})
                     return
@@ -738,9 +756,16 @@ async function loadAuth(){
   document.getElementById('auth-status').textContent = 'active: ' + s.active;
   document.getElementById('provider').value = s.active || 'stub';
   const codex = s.codex || {};
+  const hermes = s.hermes || {};
   const status = document.getElementById('codex-status');
   const option = document.querySelector('#provider option[value="chatgpt"]');
-  if (codex.backend === 'http') {
+  if (hermes.configured) {
+    const signed = hermes.authenticated || {};
+    status.textContent = 'Hermes Bot runtime: ' + (hermes.available ? 'connected' : 'unavailable') +
+      '; ChatGPT ' + (signed.chatgpt ? 'signed in' : 'needs sign-in') +
+      '; Grok ' + (signed.grok ? 'signed in' : 'needs sign-in') + '.';
+    option.textContent = 'ChatGPT (Hermes agent)';
+  } else if (codex.backend === 'http') {
     status.textContent = 'HTTP mode: ChatGPT OAuth is owned by Hierarchy.';
     option.textContent = 'ChatGPT OAuth (HTTP)';
   } else if (!codex.available) {
@@ -758,7 +783,8 @@ async function loadAuth(){
 function updateOauthUi(){
   const provider = document.getElementById('provider').value;
   const codex = authState && authState.codex;
-  const allowed = provider === 'grok' || (provider === 'chatgpt' && codex && codex.backend === 'http');
+  const hermes = authState && authState.hermes;
+  const allowed = provider === 'grok' || (provider === 'chatgpt' && ((hermes && hermes.configured) || (codex && codex.backend === 'http')));
   const button = document.getElementById('oauth');
   button.disabled = !allowed;
   button.textContent = provider === 'grok' ? 'Grok OAuth device login' :
@@ -780,11 +806,12 @@ document.getElementById('save-key').onclick = async () => {
 document.getElementById('oauth').onclick = async () => {
   const provider = document.getElementById('provider').value;
   const codex = authState && authState.codex;
+  const hermes = authState && authState.hermes;
   if (provider !== 'grok' && provider !== 'chatgpt') {
     document.getElementById('oauth-hint').textContent = 'Pick Grok OAuth or ChatGPT OAuth first.';
     return;
   }
-  if (provider === 'chatgpt' && (!codex || codex.backend !== 'http')) {
+  if (provider === 'chatgpt' && (!hermes || !hermes.configured) && (!codex || codex.backend !== 'http')) {
     document.getElementById('oauth-hint').textContent = 'ChatGPT login is owned by Codex. Run codex login as the service user, or set HIERARCHY_CHATGPT_BACKEND=http.';
     return;
   }

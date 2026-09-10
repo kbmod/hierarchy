@@ -226,7 +226,7 @@ export function HierarchyApp() {
   }
 
   async function startOauth(provider: "grok" | "chatgpt") {
-    if (provider === "chatgpt" && auth?.codex?.backend !== "http") {
+    if (provider === "chatgpt" && !auth?.hermes?.configured && auth?.codex?.backend !== "http") {
       return;
     }
     const start = await run(() => vps.oauthStart(conn, provider));

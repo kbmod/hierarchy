@@ -5,41 +5,41 @@ Repository: `kbmod/hierarchy`
 
 ## Scope of this note
 
-This is a future-work record, not an acceptance report. It documents the gap
-between the current implementation and the behavior wanted from Hierarchy:
-independent Grok and ChatGPT subscription providers, a persistent multi-step
-agent loop, explicit approvals, and a genuinely native Android client.
+This is both a current-state record and a future-work checklist. It documents
+which Hermes runtime requirements now have evidence and which Grok Bot clone
+requirements remain open.
 
-## Important finding about Hermes
+## Verified Hermes integration (2026-09-08)
 
-The current work did **not** establish that Hierarchy's ChatGPT OAuth flow is
-the same flow used by Hermes. The implementation currently contains a
-Codex-style device-auth path and an optional Codex app-server backend. That is
-not evidence that Hermes's default OAuth, provider abstraction, tool
-execution, or session lifecycle has been borrowed correctly.
+Hierarchy now installs and invokes NousResearch's actual Hermes Agent bot and
+gateway implementation, pinned to commit
+`966637323e6f90864e069dbc12755934c2c86387` (Hermes 0.21.1). The primary path is
+Hermes `gateway run`, profile-scoped `/v1/runs`, `AIAgent`'s native tool loop,
+and canonical Bot Mode sessions. It is not ACP or Codex app-server.
 
-The current code should therefore be described precisely:
+- Each supported Hierarchy bot maps to an isolated Hermes profile with a
+  canonical `Bot Chat`, profile-scoped API key, `SOUL.md`, state database,
+  memory, model/provider configuration, and shared-computer working directory.
+- `chatgpt` maps to Hermes `openai-codex`; `grok` maps to Hermes `xai-oauth`.
+  Their independent grants coexist in Hermes's private auth store and Hermes
+  owns refresh after import.
+- The existing device-login UI now saves completed grants and imports them into
+  Hermes. Before this change, the HTTP poll endpoint discarded successful
+  tokens instead of persisting them.
+- A live ChatGPT subscription run through the phone-facing Hierarchy API used
+  native terminal tools to create and read a file, then returned
+  `HERMES_AGENT_LOOP_OK`. A second live run invoked `hierarchy-bot list` and
+  returned the correct five-bot count.
+- A live Grok OAuth run through the same Hermes profile route used terminal
+  tools to write and read `GROK_HERMES_AGENT_OK`, proving both subscription
+  providers use the native Hermes tool loop.
+- Persistent specialists can be created, listed, and messaged from an agent's
+  terminal with the narrow `hierarchy-bot` control command. These are real
+  Hierarchy roster entries backed by Hermes profiles, not ephemeral subagents.
 
-- Grok OAuth is implemented as a VPS-side device-code flow and has worked in
-  the user's testing.
-- ChatGPT has two different concepts in the current UI/runtime: a legacy
-  Hierarchy HTTP OAuth path and an optional Codex app-server path.
-- The Codex app-server path depends on the Codex installation and its own
-  authenticated state; it is not currently a clearly actionable ChatGPT login
-  flow in the Android UI.
-- The repository has not yet demonstrated a live ChatGPT OAuth completion,
-  per-bot ChatGPT execution, or Hermes-equivalent agent behavior.
-- The current twelve-step runtime and synchronous chat behavior must not be
-  presented as a completed autonomous-agent implementation.
-
-The next investigation must obtain and inspect the actual Hermes
-implementation (or a pinned, reviewable equivalent) before choosing protocol
-details. Compare its OAuth start, browser/device callback, polling, token
-refresh, account headers, provider selection, tool-call format, approval
-handling, session persistence, and compaction behavior with
-`vps-agent/src/hierarchy/oauth.py`, `llm.py`, and `runtime.py`. Record source
-references and tests; do not infer equivalence from endpoint names or from the
-fact that both projects can use a ChatGPT subscription.
+The former Codex app-server and twelve-step JSON loop remain only as compatibility
+fallbacks when Hermes is not configured. They are not the installed primary
+runtime.
 
 ## Required future implementation
 
@@ -145,13 +145,17 @@ Grok flow, provider data model, and Codex integration experiments. It is not
 accepted for the requirements above until live tests demonstrate all of the
 following:
 
-1. ChatGPT subscription login completes through the verified implementation.
-2. ChatGPT is selectable per bot independently of Grok.
-3. Both providers execute native multi-step tool turns.
-4. Soul, memory, session continuation, and compaction survive a resumed turn.
-5. Approval requests appear as actionable Android controls and correctly pause
+1. **Passed:** ChatGPT subscription credentials execute through upstream Hermes.
+2. **Passed:** ChatGPT is selectable per bot independently of Grok.
+3. **Passed:** Both ChatGPT and Grok have installed native multi-step tool
+   acceptance through the same Hermes gateway.
+4. **Partial:** Hermes profile soul, memory, canonical session, and compaction
+   facilities are wired, and the canonical Owl session resumed across a Hermes
+   service reinstall/restart. Explicit memory recall and forced compaction
+   acceptance remain to be recorded.
+5. **Open:** Approval requests appear as actionable Android controls and correctly pause
    and resume execution.
-6. The native Android client works without relying on the shared WebView UI.
+6. **Open:** The native Android client works without relying on the shared WebView UI.
 
-Until then, do not claim that Hermes has been successfully borrowed, that the
-agent loop is complete, or that the current APK is a production-native client.
+Until the open acceptance items pass, describe this as an upstream-Hermes agent
+runtime milestone, not a completed Grok Bot clone or production-native client.

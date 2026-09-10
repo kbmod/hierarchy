@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import hierarchy.runtime as runtime_module
+from hierarchy import auth
 from hierarchy.runtime import CodexAppError, Runtime
 
 
@@ -241,6 +242,18 @@ class RuntimeTests(unittest.TestCase):
             reply = self.rt.chat(bot.id, "hello")
         self.assertEqual(reply.text, "http reply")
         complete.assert_called_once()
+
+    def test_unset_bot_provider_uses_active_provider_through_hermes(self) -> None:
+        bot = self.rt.create("default", "Responder", "Uses active provider")
+        auth.set_active(self._tmp.name, "chatgpt")
+        hermes = SimpleNamespace(run_turn=unittest.mock.Mock(return_value="agent reply"))
+        self.rt._hermes = hermes
+
+        reply = self.rt.chat(bot.id, "hello")
+
+        self.assertEqual(reply.text, "agent reply")
+        routed_bot = hermes.run_turn.call_args.args[0]
+        self.assertEqual(routed_bot.provider, "chatgpt")
 
     def test_chatgpt_codex_mode_requires_both_runtime_paths(self) -> None:
         bot = self.rt.create("missing", "Responder", "Needs Codex", provider="chatgpt")

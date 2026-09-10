@@ -34,6 +34,7 @@ On each server, run it as a service (no open terminal):
 git clone https://github.com/kbmod/hierarchy.git
 cd hierarchy/vps-agent
 sudo bash scripts/install-service.sh
+sudo bash scripts/install-hermes-runtime.sh
 ```
 
 Paste the printed URL (`http://YOUR_VPS_IP:8765`) and token into the app. Open TCP 8765 on the firewall.
@@ -44,10 +45,13 @@ python3 -m hierarchy login grok
 python3 -m hierarchy login chatgpt
 ```
 
-Or use Providers in the app (device-code OAuth).
+Or use Providers in the app (device-code OAuth). The Hermes installer pins the
+reviewed upstream runtime, imports any existing Grok/Codex grants into Hermes's
+private credential store, and enables per-bot autonomous tool turns. It requires
+`git`, `uv`, and systemd on the VPS.
 
-- **Grok OAuth** → `https://api.x.ai/v1`
-- **ChatGPT OAuth** → Codex device flow (`chatgpt.com/backend-api/codex`)
+- **Grok OAuth** → Hermes `xai-oauth`
+- **ChatGPT OAuth** → Hermes `openai-codex` using ChatGPT subscription access
 
 Health: `GET /api/health` (no token). Everything else requires `Authorization: Bearer $HIERARCHY_TOKEN` when the token is set.
 

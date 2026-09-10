@@ -14,8 +14,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from hierarchy import computer, inbox, tools
+from hierarchy import auth, computer, inbox, tools
 from hierarchy.llm import CompleteFn, complete as llm_complete
+from hierarchy.hermes_runtime import HermesRuntime, HermesRuntimeError
 
 from hierarchy.models import Bot, ChatReply
 from hierarchy.store import Store
@@ -61,6 +62,7 @@ class Runtime:
         self._codex_locks: dict[str, threading.Lock] = {}
         self._codex_clients: dict[tuple[str, str], Any] = {}
         self._codex_closed = False
+        self._hermes = HermesRuntime(root) if HermesRuntime.configured() else None
         tools.workspace(Path(self.home))
 
     def close(self) -> None:
@@ -247,6 +249,23 @@ class Runtime:
         history = list(self.store.history(bot.id))
         if self._complete is not None:
             return self._complete(bot, instructions, history, text)
+        selected_provider = (bot.provider or auth.load(self.home).get("active") or "").strip().lower()
+        if self._hermes is not None and selected_provider in {
+            "chatgpt", "grok", "openai", "xai", "openrouter"
+        }:
+            bot_dir = self.store.bot_dir(bot.id)
+            routed_bot = bot if bot.provider else replace(bot, provider=selected_provider)
+
+            def on_progress(status: dict[str, Any]) -> None:
+                phase = str(status.get("status") or "working").replace("_", " ")
+                if phase == "waiting for approval":
+                    approval = status.get("approval") if isinstance(status.get("approval"), dict) else {}
+                    tool = str(approval.get("tool") or approval.get("tool_name") or "tool")
+                    computer.append_line(bot_dir, f"Hermes approval required: {tool}", status="working")
+                else:
+                    computer.append_line(bot_dir, f"Hermes run: {phase}", status="working")
+
+            return self._hermes.run_turn(routed_bot, instructions, text, on_progress=on_progress)
         if self._use_codex(bot):
             return self._codex_turn(bot, instructions, text)
         return self._act(bot, instructions, history, text)
@@ -486,6 +505,8 @@ def _computer_error_line(exc: BaseException) -> str:
         raw_method = str(getattr(exc, "method", "") or "").strip().replace("/", "_")
         method = _event_token(raw_method)
         return f"error codex method={method}" if method else "error codex"
+    if isinstance(exc, HermesRuntimeError):
+        return "error hermes"
     return f"error {kind}"
 
 

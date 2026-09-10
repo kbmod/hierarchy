@@ -21,6 +21,12 @@ export type AuthStatus = {
     binary?: string | null;
     home?: string | null;
   };
+  hermes?: {
+    configured: boolean;
+    available: boolean;
+    authenticated?: Record<string, boolean>;
+    error?: string;
+  };
 };
 
 export type Bot = {

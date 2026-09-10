@@ -54,5 +54,20 @@ class InstallerContractTests(unittest.TestCase):
         )
 
 
+class HermesInstallerContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.script = Path(__file__).parents[1] / "scripts" / "install-hermes-runtime.sh"
+        self.source = self.script.read_text(encoding="utf-8")
+
+    def test_pins_upstream_and_installs_non_secret_bot_control(self) -> None:
+        result = subprocess.run(["bash", "-n", str(self.script)], check=False, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("HERMES_COMMIT=966637323e6f90864e069dbc12755934c2c86387", self.source)
+        self.assertIn("/usr/local/bin/hierarchy-bot", self.source)
+        self.assertNotIn('source "$HIERARCHY_ENV"', self.source)
+        self.assertNotIn('. "$HIERARCHY_ENV"', self.source)
+        self.assertIn("HIERARCHY_AGENT_BACKEND hermes", self.source)
+
+
 if __name__ == "__main__":
     unittest.main()

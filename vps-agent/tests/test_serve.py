@@ -56,6 +56,17 @@ class AuthApiTests(unittest.TestCase):
         self.assertIn("codex login", body)
         with patch.dict(os.environ, {"HIERARCHY_CHATGPT_BACKEND": "http"}, clear=True):
             self.assertIsNone(serve._chatgpt_oauth_error("chatgpt"))
+        with patch.dict(os.environ, {"HIERARCHY_AGENT_BACKEND": "hermes"}, clear=True):
+            self.assertIsNone(serve._chatgpt_oauth_error("chatgpt"))
+
+    def test_completed_oauth_is_imported_into_hermes(self) -> None:
+        runtime = SimpleNamespace(home="/tmp/hierarchy", _hermes=SimpleNamespace())
+        runtime._hermes.import_oauth = unittest.mock.Mock()
+        tokens = {"access_token": "a", "refresh_token": "r"}
+        with patch.object(serve.auth, "set_oauth") as save:
+            serve._persist_oauth(runtime, "chatgpt", tokens)
+        save.assert_called_once_with("/tmp/hierarchy", "chatgpt", tokens)
+        runtime._hermes.import_oauth.assert_called_once_with("chatgpt", tokens)
 
     def test_embedded_page_reflects_codex_status_and_guards_oauth(self) -> None:
         self.assertIn('id="codex-status"', serve._PAGE)
@@ -65,7 +76,7 @@ class AuthApiTests(unittest.TestCase):
         self.assertIn("provider: document.getElementById('bot-provider').value || undefined", serve._PAGE)
         self.assertIn("model: document.getElementById('bot-model').value || undefined", serve._PAGE)
         self.assertIn("Default model (leave blank)", serve._PAGE)
-        self.assertIn("codex.backend === 'http'", serve._PAGE)
+        self.assertIn("hermes.configured", serve._PAGE)
         self.assertIn("button.disabled = !allowed", serve._PAGE)
         self.assertIn("ChatGPT login is owned by Codex", serve._PAGE)
 

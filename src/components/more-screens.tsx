@@ -177,6 +177,8 @@ export function ProvidersScreen({
   const [key, setKey] = useState("");
   const [prov, setProv] = useState<"xai" | "openai" | "openrouter">("xai");
   const codex = auth?.codex;
+  const hermes = auth?.hermes;
+  const hermesActive = Boolean(hermes?.configured);
   const codexMessage = !codex
     ? "Codex status is unavailable."
     : !codex.available
@@ -189,19 +191,28 @@ export function ProvidersScreen({
       <TopBar onBack={onBack} title="Providers" subtitle="xAI and ChatGPT" />
       <div className="space-y-4 px-4 py-4">
         <p className="text-[13px] leading-relaxed text-muted">
-          Grok OAuth and API keys are stored by Hierarchy on the VPS. ChatGPT subscription access is owned by the
-          Codex CLI when the Codex app-server backend is selected; Codex keeps and refreshes its own credentials.
+          ChatGPT subscription and Grok OAuth are used by the Hermes Bot runtime. Hermes keeps and refreshes its own
+          credentials, and each bot can independently select either provider and model.
         </p>
         <div className="grid grid-cols-2 gap-2">
           <PrimaryButton onClick={() => onOauth("grok")}>Grok OAuth</PrimaryButton>
           <GhostButton
-            onClick={auth?.codex?.backend === "http" ? () => onOauth("chatgpt") : undefined}
-            className={auth?.codex?.backend === "http" ? undefined : "opacity-60"}
+            onClick={hermesActive || auth?.codex?.backend === "http" ? () => onOauth("chatgpt") : undefined}
+            className={hermesActive || auth?.codex?.backend === "http" ? undefined : "opacity-60"}
           >
-            {auth?.codex?.backend === "http" ? "ChatGPT OAuth" : "ChatGPT login via Codex"}
+            ChatGPT OAuth
           </GhostButton>
         </div>
-        {codex && codex.backend !== "http" ? (
+        {hermesActive ? (
+          <div className="rounded-[20px] border border-line bg-surface p-4 text-[13px] leading-relaxed text-muted">
+            <div className="font-medium text-fg">
+              {hermes?.available ? "Hermes Bot runtime connected" : "Hermes Bot runtime unavailable"}
+            </div>
+            <p className="mt-1">
+              ChatGPT: {hermes?.authenticated?.chatgpt ? "signed in" : "sign-in required"} · Grok: {hermes?.authenticated?.grok ? "signed in" : "sign-in required"}
+            </p>
+          </div>
+        ) : codex && codex.backend !== "http" ? (
           <div className="rounded-[20px] border border-line bg-surface p-4 text-[13px] leading-relaxed text-muted">
             <div className="font-medium text-fg">
               {codex.authenticated ? "Codex app-server connected" : codex.available ? "Codex sign-in required" : "Codex unavailable"}
@@ -653,6 +664,7 @@ function ProviderModelFields({
     if (id === "chatgpt") {
       return Boolean(
         auth?.oauth?.chatgpt?.configured ||
+          auth?.hermes?.authenticated?.chatgpt ||
           (auth?.codex?.selected && auth.codex.authenticated),
       );
     }
@@ -668,7 +680,7 @@ function ProviderModelFields({
         >
           {PROVIDER_OPTIONS.map((opt) => (
             <option key={opt.id || "default"} value={opt.id}>
-              {opt.id === "chatgpt" && auth?.codex?.selected ? "ChatGPT via Codex" : opt.label}
+              {opt.id === "chatgpt" && auth?.hermes?.configured ? "ChatGPT (Hermes agent)" : opt.label}
               {opt.id && !connected(opt.id) ? " — not connected" : ""}
             </option>
           ))}
@@ -679,7 +691,7 @@ function ProviderModelFields({
           <TextField
             value={model}
             onChange={(e) => onModel(e.target.value)}
-            placeholder={provider === "chatgpt" ? "Default Codex model" : suggestions[0] || "model id"}
+            placeholder={provider === "chatgpt" ? "Default Hermes/Codex model" : suggestions[0] || "model id"}
             autoCapitalize="none"
             autoCorrect="off"
           />
